@@ -1,0 +1,5 @@
+message-db:
+  error:
+    duration:
+      end-before-start: "End time must be after start time."
+      invalid-date: "Invalid date {0}."

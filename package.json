@@ -9,14 +9,34 @@
     "dist"
   ],
   "license": "MIT",
-  "scripts": {},
   "keywords": [
     "chatbot",
     "koishi",
     "plugin"
   ],
-  "devDependencies": {},
   "peerDependencies": {
     "koishi": "^4.18.7"
+  },
+  "dependencies": {
+    "@satorijs/element": "^3.1.7",
+    "dayjs": "^1.11.13"
+  },
+  "devDependencies": {
+    "@satorijs/protocol": "^1.6.0"
+  },
+  "koishi": {
+    "service": {
+      "required": [
+        "database"
+      ],
+      "implements": [
+        "messageDb"
+      ]
+    }
+  },
+  "scripts": {
+    "build": "yarn workspace willbot build w-message-db",
+    "bump": "yarn workspace willbot bump w-message-db",
+    "pub": "yarn workspace willbot pub w-message-db"
   }
 }
