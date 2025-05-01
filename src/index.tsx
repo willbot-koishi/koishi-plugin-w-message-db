@@ -1,6 +1,8 @@
 import { Context, z, SessionError, h, Service, Query, Session, $ } from 'koishi'
+import {} from 'koishi-plugin-cron'
 
 import dayjs from 'dayjs'
+
 import { divide, stripUndefined } from './utils'
 
 export interface TrackedGuild {
@@ -77,7 +79,7 @@ export type FetchHistoryGuildResult =
   | { guild: TrackedGuild, type: 'ok', count: number, done: boolean }
 
 class MessageDbService extends Service {
-  static inject = [ 'database' ]
+  static inject = [ 'database', 'cron' ]
 
   logger = this.ctx.logger('w-message-db')
 
@@ -86,8 +88,13 @@ class MessageDbService extends Service {
       throw new SessionError('message-db.error.guild-only')
   }
 
-  checkTracked({ guildId }: Session) {
-    if (! this.config.trackedGuilds.some(it => it.id === guildId))
+  isTracked({ platform, guildId }: { platform: string, guildId: string }, force = false) {
+    return (! this.config.requireTracking && ! force)
+      || this.config.trackedGuilds.some(it => it.platform === platform && it.id === guildId)
+  }
+
+  checkTracked(session: Session) {
+    if (! this.isTracked(session))
       throw new SessionError('message-db.error.guild-not-tracked')
   }
 
@@ -107,6 +114,7 @@ class MessageDbService extends Service {
   constructor(ctx: Context, public config: MessageDbService.Config) {
     super(ctx, 'messageDb')
 
+    // Define message table.
     ctx.model.extend('w-message', {
       id: 'string',
       platform: 'string',
@@ -119,6 +127,7 @@ class MessageDbService extends Service {
       primary: 'id',
     })
 
+    // Save messages.
     const saveMessage = async (session: Session) => {
       // Check readonly mode.
       if (config.readonly) return
@@ -127,8 +136,8 @@ class MessageDbService extends Service {
       const { guildId } = session
       if (! session.guildId) return
 
-      // Ignore messages from untracked guilds.
-      if (! config.trackedGuilds.some(it => it.id === guildId)) return
+      // Ignore messages from untracked guilds if tracking is required.
+      if (config.requireTracking && ! config.trackedGuilds.some(it => it.id === guildId)) return
 
       // Save message.
       const { platform, userId, username, content, timestamp, messageId } = session
@@ -149,6 +158,10 @@ class MessageDbService extends Service {
     ctx.on('message', saveMessage)
     ctx.on('send', saveMessage)
 
+    // Garbage collection.
+    if (config.gc.enabled) ctx.cron(config.gc.cron, () => this.gc())
+
+    // Commands.
     ctx.command('message-db', 'Message database')
       .alias('mdb')
 
@@ -177,29 +190,35 @@ class MessageDbService extends Service {
           ...durationQuery,
         }
 
-        const messages = await ctx.database
-          .select('w-message')
-          .where(query)
-          .orderBy('timestamp', 'desc')
-          .offset((options.page - 1) * config.pageSize)
-          .limit(config.pageSize)
-          .execute()
-
-        if (! messages.length)
-          return 'No messages found.'
+        const [ messages, messageTotal ] = await Promise.all([
+          ctx.database
+            .select('w-message')
+            .where(query)
+            .orderBy('timestamp', 'desc')
+            .offset((options.page - 1) * config.pageSize)
+            .limit(config.pageSize)
+            .execute(),
+          ctx.database
+            .select('w-message')
+            .where(query)
+            .execute(row => $.count(row.id))
+        ])
+        const pageTotal = Math.ceil(messageTotal / config.pageSize)
 
         messages.reverse()
 
         return <message forward>
           <message>
-            Found {messages.length} messages. (Page {options.page})
+            Found {messages.length}/{messageTotal} messages. (Page {options.page}/{pageTotal})
           </message>
           {
-            messages.map(({ username, timestamp, content }) => <message>
-              <b>{ username }{ options.withTime ? ` [${dayjs(timestamp).format('YYYY-MM-DD HH:mm:ss')}]` : '' }:</b>
-              <br />
-              { this.renderMessage(content) }
-            </message>)
+            messages.map(({ username, timestamp, content }) => (
+              <message>
+                <b>{ username }{ options.withTime ? ` [${dayjs(timestamp).format('YYYY-MM-DD HH:mm:ss')}]` : '' }:</b>
+                <br />
+                { this.renderMessage(content) }
+              </message>
+            ))
           }
         </message>
       })
@@ -219,9 +238,45 @@ class MessageDbService extends Service {
         </>
       })
 
+    ctx.command('message-db.gc', 'Run garbage collection manually', { authority: 4 })
+      .action(async () => {
+        const removed = this.gc()
+        if (removed === null)
+          return 'Garbage collection is disabled.'
+        return `Removed ${removed} messages.`
+      })
+    
+    ctx.command('message-db.stats', 'Show message statistics')
+      .action(async () => {
+        const [ messageTotal, guildTotal ] = await Promise.all([
+          ctx.database
+            .select('w-message')
+            .execute(row => $.count(row.id)),
+          ctx.database
+            .select('w-message')
+            .project({ gid: row => $.concat(row.platform, ':', row.guildId) })
+            .execute(row => $.count(row.gid))
+        ])
+
+        return <>
+          Total messages: {messageTotal}<br />
+          Total guilds: {guildTotal}<br />
+          Tracked guilds: {this.config.trackedGuilds.length}<br />
+          Garbage collection: {
+            this.config.gc.enabled
+              ? `enabled (${[
+                this.config.gc.cron,
+                `>= ${this.config.gc.olderThan}d`,
+                this.config.gc.untrackedOnly ? 'untracked' : 'all'
+              ].join(', ')})`
+              : 'disabled'
+          }<br />
+        </>
+      })
+
     ctx.command('message-db.guild', 'Manage tracked guilds', { authority: 4 })
 
-    ctx.command('message-db.guild.list', 'List tracked guilds')
+    ctx.command('message-db.guild.list-tracked', 'List tracked guilds')
       .action(async () => {
         const { trackedGuilds } = this.config
         if (! trackedGuilds.length)
@@ -271,7 +326,29 @@ class MessageDbService extends Service {
   }
 
   async start() {
-    await this.fetchHistory()
+    // Fetch message history of tracked guilds on start.
+    if (! this.config.readonly)
+      await this.fetchHistory()
+  }
+
+  async gc(): Promise<number | null> {
+    if (! this.config.gc.enabled) return null
+
+    const { olderThan, untrackedOnly } = this.config.gc
+    const minTime = Date.now() - olderThan * 24 * 60 * 60 * 1000
+
+    const { removed } = await this.ctx.database.remove('w-message', row => $.and(
+      $.lt(row.timestamp, minTime),
+      untrackedOnly
+        ? $.not(
+          $.in(
+            $.concat(row.platform, ':', row.guildId),
+            this.config.trackedGuilds.map(it => `${it.platform}:${it.id}`)
+          )
+        )
+        : true,
+    ))
+    return removed
   }
 
   async fetchHistory(): Promise<FetchHistoryResult> {
@@ -299,7 +376,7 @@ class MessageDbService extends Service {
           const { inserted } = await this.ctx.database.upsert('w-message', [ message ])
           if (! inserted) break
 
-          if (++ count === this.config.maxFetchHistoryCount)
+          if (++ count === this.config.maxHistoryFetchingCount)
             return { guild, type: 'ok', count, done: false }
         }
 
@@ -334,6 +411,7 @@ class MessageDbService extends Service {
   }
 
   renderMessage(content: string) {
+    // TODO: Better message rendering.
     return h.transform(h.parse(content), {
       json: ({ data }) => {
         if (data.includes('[聊天记录]')) return '[聊天记录]'
@@ -343,12 +421,21 @@ class MessageDbService extends Service {
   }
 }
 
+interface MessageGcConfig {
+  enabled: boolean
+  olderThan: number
+  cron: string
+  untrackedOnly: boolean
+}
+
 namespace MessageDbService {
   export interface Config {
     readonly: boolean
     trackedGuilds: TrackedGuild[]
+    requireTracking: boolean
     pageSize: number
-    maxFetchHistoryCount: number
+    maxHistoryFetchingCount: number
+    gc: MessageGcConfig
   }
 
   export const Config: z<Config> = z.object({
@@ -363,14 +450,38 @@ namespace MessageDbService {
         managerBotId: z.string().description('Manager bot ID.'), 
       }))
       .description('List of guilds to track messages.'),
+    requireTracking: z
+      .boolean()
+      .default(false)
+      .description('Whether to require tracking guilds.'),
     pageSize: z
       .natural()
       .default(30)
       .description('Number of messages to display per page.'),
-    maxFetchHistoryCount: z
+    maxHistoryFetchingCount: z
       .natural()
       .default(100)
       .description('Maximum number of history messages to fetch in one go.'),
+    gc: z
+      .object({
+        enabled: z
+          .boolean()
+          .default(true)
+          .description('Whether to enable message garbage collection.'),
+        cron: z
+          .string()
+          .default('0 0 * * *')
+          .description('Cron expression for garbage collection.'),
+        olderThan: z
+          .number()
+          .default(3)
+          .description('Number of days to keep messages.'),
+        untrackedOnly: z
+          .boolean()
+          .default(false)
+          .description('Whether to only delete untracked messages.'),
+      })
+      .description('Garbage collection'),
   })
 }
 
