@@ -1,8 +1,7 @@
-import { Context, z, SessionError, h, Service, Awaitable } from 'koishi'
+import { Context, z, SessionError, h, Service, Query, Session, $ } from 'koishi'
 
 import dayjs from 'dayjs'
 import { divide, stripUndefined } from './utils'
-import { Message } from '@satorijs/protocol'
 
 export interface TrackedGuild {
   platform: string
@@ -82,6 +81,29 @@ class MessageDbService extends Service {
 
   logger = this.ctx.logger('w-message-db')
 
+  checkInGuild(session: Session) {
+    if (! session.guildId)
+      throw new SessionError('message-db.error.guild-only')
+  }
+
+  checkTracked({ guildId }: Session) {
+    if (! this.config.trackedGuilds.some(it => it.id === guildId))
+      throw new SessionError('message-db.error.guild-not-tracked')
+  }
+
+  checkNotReadonly() {
+    if (this.config.readonly)
+      throw new SessionError('message-db.error.readonly')
+  }
+
+  validateUid(uid: string | undefined, platform?: string) {
+    if (! uid) return undefined
+    const [ userPlatform, userId ] = uid.split(':')
+    if (platform && userPlatform !== platform)
+      throw new SessionError('message-db.error.user-not-same-platform', [ uid ])
+    return userId
+  }
+
   constructor(ctx: Context, public config: MessageDbService.Config) {
     super(ctx, 'messageDb')
 
@@ -95,19 +117,18 @@ class MessageDbService extends Service {
       timestamp: 'unsigned',
     }, {
       primary: 'id',
-      autoInc: true,
     })
 
-    ctx.middleware(async (session, next) => {
+    const saveMessage = async (session: Session) => {
       // Check readonly mode.
-      if (config.readonly) return next()
+      if (config.readonly) return
 
       // Ignore non-guild messages.
       const { guildId } = session
-      if (! session.guildId) return next()
+      if (! session.guildId) return
 
       // Ignore messages from untracked guilds.
-      if (! config.trackedGuilds.some(it => it.id === guildId)) return next()
+      if (! config.trackedGuilds.some(it => it.id === guildId)) return
 
       // Save message.
       const { platform, userId, username, content, timestamp, messageId } = session
@@ -121,7 +142,12 @@ class MessageDbService extends Service {
         timestamp
       }
       await ctx.database.upsert('w-message', [ message ])
-    })
+
+      return
+    }
+
+    ctx.on('message', saveMessage)
+    ctx.on('send', saveMessage)
 
     ctx.command('message-db', 'Message database')
       .alias('mdb')
@@ -134,23 +160,26 @@ class MessageDbService extends Service {
       .option('withTime', '-t, --with-time Show message timestamps', { fallback: false })
       .option('search', '-s <regexp:string> Search for messages')
       .action(async ({ options, session }) => {
+        this.checkInGuild(session)
+        this.checkTracked(session)
+
         const { platform, guildId } = session
-        if (! guildId)
-          return 'Please call this command in a guild.'
-        if (! config.trackedGuilds.some(it => it.id === guildId))
-          return 'This guild is not tracked.'
 
         const durationQuery = durationToQuery(parseDuration(options.duration ?? ''))
 
+        const userId = this.validateUid(options.user, platform)
+
+        const query: Query<TrackedMessage> = {
+          platform,
+          guildId,
+          userId: userId ?? {},
+          content: options.search ? { $regex: options.search } : {},
+          ...durationQuery,
+        }
+
         const messages = await ctx.database
           .select('w-message')
-          .where({
-            platform,
-            guildId,
-            userId: options.user ?? {},
-            content: options.search ? { $regex: options.search } : {},
-            ...durationQuery,
-          })
+          .where(query)
           .orderBy('timestamp', 'desc')
           .offset((options.page - 1) * config.pageSize)
           .limit(config.pageSize)
@@ -169,7 +198,7 @@ class MessageDbService extends Service {
             messages.map(({ username, timestamp, content }) => <message>
               <b>{ username }{ options.withTime ? ` [${dayjs(timestamp).format('YYYY-MM-DD HH:mm:ss')}]` : '' }:</b>
               <br />
-              { h.parse(content) }
+              { this.renderMessage(content) }
             </message>)
           }
         </message>
@@ -177,8 +206,7 @@ class MessageDbService extends Service {
 
     ctx.command('message-db.fetch-history', 'Fetch message history', { authority: 3 })
       .action(async () => {
-        if (config.readonly)
-          return 'Message database is in readonly mode.'
+        this.checkNotReadonly()
 
         const startTime = Date.now()
         const result = await this.fetchHistory()
@@ -190,6 +218,56 @@ class MessageDbService extends Service {
           Fetched {result.messageCount} messages in total.
         </>
       })
+
+    ctx.command('message-db.guild', 'Manage tracked guilds', { authority: 4 })
+
+    ctx.command('message-db.guild.list', 'List tracked guilds')
+      .action(async () => {
+        const { trackedGuilds } = this.config
+        if (! trackedGuilds.length)
+          return 'No tracked guilds.'
+
+        const countMap = new Map((await this.ctx.database
+          .select('w-message')
+          .groupBy('guildId', {
+            count: row => $.count(row.id)
+          })
+          .execute()
+        ).map(it => [ it.guildId, it.count ]))
+
+        const guilds = trackedGuilds.map(guild => ({
+          ...guild,
+          messageCount: countMap.get(guild.id) ?? 0,
+        }))
+
+        return <message>
+          {guilds.length} tracked guilds:<br />
+          {
+            guilds.map(guild => <>
+              { guild.platform }:{ guild.id } @ { guild.managerBotId } * { guild.messageCount } <br />
+            </>)
+          }
+        </message>  
+      })
+
+    ctx.command('message-db.guild.track', 'Track current guild')
+      .action(({ session }) => {
+        this.checkInGuild(session)
+
+        const { platform, guildId } = session
+
+        if (config.trackedGuilds.some(it => it.id === guildId))
+          throw new SessionError('message-db.error.guild-already-tracked')
+
+        config.trackedGuilds.push({
+          platform,
+          id: guildId,
+          managerBotId: session.bot.selfId,
+        })
+        this.ctx.scope.update(config)
+
+        return 'Tracked current guild.'
+      })
   }
 
   async start() {
@@ -200,14 +278,13 @@ class MessageDbService extends Service {
     const results = await Promise.all(this.config.trackedGuilds.map(async (guild): Promise<FetchHistoryGuildResult> => {
       const { platform, id: guildId, managerBotId } = guild
       const bot = this.ctx.bots.find(it => it.platform === platform && it.selfId === managerBotId)
-      if (! bot || ! bot.isActive) return { guild, type: 'error', error: 'bot-not-available' }
+      if (! bot || ! bot.isActive)
+        return { guild, type: 'error', error: 'bot-not-available' }
       try {
         const iter = bot.getMessageIter(guildId)
         let count = 0
         for await (const msg of iter) {
           if (msg.id === managerBotId) continue
-
-          count ++
 
           const message = ({
             id: msg.id,
@@ -220,12 +297,13 @@ class MessageDbService extends Service {
           })
 
           const { inserted } = await this.ctx.database.upsert('w-message', [ message ])
-          if (! inserted)
-            return { guild, type: 'ok', count, done: true }
+          if (! inserted) break
 
-          if (count === this.config.maxFetchHistoryCount)
+          if (++ count === this.config.maxFetchHistoryCount)
             return { guild, type: 'ok', count, done: false }
         }
+
+        return { guild, type: 'ok', count, done: true }
       }
       catch (err) {
         this.logger.error(err)
@@ -253,6 +331,15 @@ class MessageDbService extends Service {
     }`)
 
     return result
+  }
+
+  renderMessage(content: string) {
+    return h.transform(h.parse(content), {
+      json: ({ data }) => {
+        if (data.includes('[聊天记录]')) return '[聊天记录]'
+        return '[]'
+      }
+    })
   }
 }
 

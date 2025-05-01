@@ -3,3 +3,8 @@ message-db:
     duration:
       end-before-start: "End time must be after start time."
       invalid-date: "Invalid date {0}."
+    guild-only: "Please call this command in a guild."
+    guild-not-tracked: "This guild is not tracked."
+    guild-already-tracked: "This guild is already tracked."
+    user-not-same-platform: "UID {0} is on another platform."
+    readonly: "Message database is in readonly mode."
