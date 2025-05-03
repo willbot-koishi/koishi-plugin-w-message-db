@@ -1,9 +1,10 @@
-import { Context, z, SessionError, h, Service, Query, Session, $ } from 'koishi'
+import { Context, z, SessionError, h, Service, Query, Session, $, Tables, Driver } from 'koishi'
 import {} from 'koishi-plugin-cron'
+import {} from 'koishi-plugin-w-echarts'
 
 import dayjs from 'dayjs'
 
-import { divide, stripUndefined } from './utils'
+import { divide, formatSize, stripUndefined } from './utils'
 
 export interface TrackedGuild {
   platform: string
@@ -79,7 +80,10 @@ export type FetchHistoryGuildResult =
   | { guild: TrackedGuild, type: 'ok', count: number, done: boolean }
 
 class MessageDbService extends Service {
-  static inject = [ 'database', 'cron' ]
+  static inject = {
+    required: [ 'database', 'cron' ],
+    optional: [ 'echarts' ],
+  }
 
   logger = this.ctx.logger('w-message-db')
 
@@ -113,6 +117,11 @@ class MessageDbService extends Service {
 
   constructor(ctx: Context, public config: MessageDbService.Config) {
     super(ctx, 'messageDb')
+
+    // I18n
+    void [ 'zh-CN', 'en-US' ].map((locale: string) => {
+      this.ctx.i18n.define(locale, require(`./locales/${locale}.yml`))
+    })
 
     // Define message table.
     ctx.model.extend('w-message', {
@@ -162,10 +171,10 @@ class MessageDbService extends Service {
     if (config.gc.enabled) ctx.cron(config.gc.cron, () => this.gc())
 
     // Commands.
-    ctx.command('message-db', 'Message database')
+    ctx.command('message-db')
       .alias('mdb')
 
-    ctx.command('message-db.list', 'List messages')
+    ctx.command('message-db.list')
       .option('guild', '-g <guild:channel> Guild ID to filter messages', { authority: 4 })
       .option('duration', '-d <duration:string> Duration to filter messages')
       .option('user', '-u <user:user> User ID to filter messages')
@@ -209,7 +218,14 @@ class MessageDbService extends Service {
 
         return <message forward>
           <message>
-            Found {messages.length}/{messageTotal} messages. (Page {options.page}/{pageTotal})
+            {
+              session.text('.summary', {
+                found: messages.length,
+                total: messageTotal,
+                page: options.page,
+                pageTotal
+              })
+            }
           </message>
           {
             messages.map(({ username, timestamp, content }) => (
@@ -223,64 +239,128 @@ class MessageDbService extends Service {
         </message>
       })
 
-    ctx.command('message-db.fetch-history', 'Fetch message history', { authority: 3 })
-      .action(async () => {
+    ctx.command('message-db.fetch-history', { authority: 3 })
+      .action(async ({ session }) => {
         this.checkNotReadonly()
 
         const startTime = Date.now()
         const result = await this.fetchHistory()
         const endTime = Date.now()
 
-        return <>
-          Fetched history of {config.trackedGuilds.length} guilds in {((endTime - startTime) / 1000).toFixed(3)}s.<br />
-          {result.okCount} succeeded while {result.errorCount} failed.<br />
-          Fetched {result.messageCount} messages in total.
-        </>
+        return session.text('.summary', {
+          guildCount: config.trackedGuilds.length,
+          duration: ((endTime - startTime) / 1000).toFixed(3),
+          okCount: result.okCount,
+          errorCount: result.errorCount,
+          messageCount: result.messageCount,
+        })
       })
 
-    ctx.command('message-db.gc', 'Run garbage collection manually', { authority: 4 })
-      .action(async () => {
-        const removed = this.gc()
+    ctx.command('message-db.gc', { authority: 4 })
+      .action(async ({ session }) => {
+        const removed = await this.gc()
         if (removed === null)
-          return 'Garbage collection is disabled.'
-        return `Removed ${removed} messages.`
+          return session.text('.disabled')
+        return session.text('.summary', { removed })
       })
     
-    ctx.command('message-db.stats', 'Show message statistics')
-      .action(async () => {
-        const [ messageTotal, guildTotal ] = await Promise.all([
+    ctx.command('message-db.stats')
+      .action(async ({ session }) => {
+        const [ messageTotal, guildTotal, dbStats ] = await Promise.all([
           ctx.database
             .select('w-message')
             .execute(row => $.count(row.id)),
           ctx.database
             .select('w-message')
             .project({ gid: row => $.concat(row.platform, ':', row.guildId) })
-            .execute(row => $.count(row.gid))
+            .execute(row => $.count(row.gid)),
+          ctx.database.stats()
         ])
 
+        const tablesStats = dbStats.tables as Record<keyof Tables, Driver.TableStats>
+        const size = tablesStats['w-message'].size
+
+        return session.text('.summary', {
+          messageTotal,
+          guildTotal,
+          trackedGuilds: this.config.trackedGuilds.length,
+          dbSize: formatSize(size),
+          gcStatus: this.config.gc.enabled
+            ? `${session.text('.gc.enabled')} (${[
+              this.config.gc.cron,
+              `>= ${this.config.gc.olderThan}${session.text('.gc.day')}`,
+              session.text(this.config.gc.untrackedOnly ? '.gc.untracked' : '.gc.all')
+            ].join(', ')})`
+            : session.text('.gc.disabled'),
+        })
+      })
+
+    ctx.command('message-db.stats.guilds')
+      .action(async ({ session }) => {
+        if (! ctx.echarts) throw new SessionError('message-db.error.echarts-not-loaded')
+
+        const data = await ctx.database
+          .select('w-message')
+          .groupBy([ 'platform', 'guildId' ], {
+            count: row => $.count(row.id),
+          })
+          .orderBy('count', 'desc')
+          .execute()
+
+        const { data: guildList } = await session.bot.getGuildList()
+        const guildMap = new Map(guildList.map(guild => [ guild.id, guild ]))
+
+        const eh = this.ctx.echarts.createChart(600, 450, {
+          title: {
+            text: session.text('.title'),
+            left: 'center',
+            top: '5%',
+            textStyle: {
+              fontSize: 24,
+            },
+          },
+          backgroundColor: '#fff',
+          series: {
+            type: 'pie',
+            width: '100%',
+            height: '100%',
+            left: 'center',
+            top: '5%',
+            radius: '60%',
+            data: data.map(({ platform, guildId, count }) => ({
+              name: (platform === session.platform
+                ? guildMap.get(guildId)?.name
+                : undefined
+              ) ?? `${platform}:${guildId}`,
+              value: count,
+            })),
+            label: {
+              formatter: (params) => `${params.name}: ${params.value}`,
+              overflow: 'breakAll',
+            },
+          },
+        })
+
+        const index = data.findIndex(it => it.platform === session.platform && it.guildId === session.guildId)
+        const rank = index + 1
+        const count = data[index].count
+
         return <>
-          Total messages: {messageTotal}<br />
-          Total guilds: {guildTotal}<br />
-          Tracked guilds: {this.config.trackedGuilds.length}<br />
-          Garbage collection: {
-            this.config.gc.enabled
-              ? `enabled (${[
-                this.config.gc.cron,
-                `>= ${this.config.gc.olderThan}d`,
-                this.config.gc.untrackedOnly ? 'untracked' : 'all'
-              ].join(', ')})`
-              : 'disabled'
-          }<br />
+          { await eh.export() }<br />
+          { rank
+            ? session.text('.summary', { count, rank })
+            : session.text('.untracked')
+          }
         </>
       })
 
-    ctx.command('message-db.guild', 'Manage tracked guilds', { authority: 4 })
+    ctx.command('message-db.guild', { authority: 4 })
 
-    ctx.command('message-db.guild.list-tracked', 'List tracked guilds')
-      .action(async () => {
+    ctx.command('message-db.guild.list-tracked')
+      .action(async ({ session }) => {
         const { trackedGuilds } = this.config
         if (! trackedGuilds.length)
-          return 'No tracked guilds.'
+          return session.text('.no-tracked-guilds')
 
         const countMap = new Map((await this.ctx.database
           .select('w-message')
@@ -295,17 +375,15 @@ class MessageDbService extends Service {
           messageCount: countMap.get(guild.id) ?? 0,
         }))
 
-        return <message>
-          {guilds.length} tracked guilds:<br />
-          {
-            guilds.map(guild => <>
-              { guild.platform }:{ guild.id } @ { guild.managerBotId } * { guild.messageCount } <br />
-            </>)
-          }
-        </message>  
+        return session.text('.summary', {
+          count: guilds.length,
+          list: guilds
+            .map(guild => `${guild.platform}:${guild.id} @ ${guild.managerBotId} * ${guild.messageCount}`)
+            .join('\n')
+        })
       })
 
-    ctx.command('message-db.guild.track', 'Track current guild')
+    ctx.command('message-db.guild.track')
       .action(({ session }) => {
         this.checkInGuild(session)
 
@@ -321,7 +399,7 @@ class MessageDbService extends Service {
         })
         this.ctx.scope.update(config)
 
-        return 'Tracked current guild.'
+        return session.text('.guild-tracked')
       })
   }
 

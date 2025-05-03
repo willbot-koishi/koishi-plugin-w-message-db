@@ -1,0 +1,60 @@
+message-db:
+  error:
+    duration:
+      end-before-start: "结束时间必须晚于开始时间。"
+      invalid-date: "无效的日期 {0}。"
+    guild-only: "请在群组中使用此命令。"
+    guild-not-tracked: "此群组未被追踪。"
+    guild-already-tracked: "此群组已被追踪。"
+    user-not-same-platform: "UID {0} 属于另一个平台。"
+    readonly: "消息数据库处于只读模式。"
+    echarts-not-loaded: "ECharts 插件未加载。"
+
+commands:
+  message-db:
+    description: "消息数据库"
+  message-db.list:
+    description: "列出消息"
+    messages:
+      summary: "找到 {found}/{total} 条消息。（第 {page}/{pageTotal} 页）"
+  message-db.fetch-history:
+    description: "获取消息历史"
+    messages:
+      summary: "在 {duration} 秒内获取了 {guildCount} 个群组的历史。\n{okCount} 成功，{errorCount} 失败。\n共获取了 {messageCount} 条消息。"
+  message-db.gc:
+    description: "手动运行垃圾回收"
+    messages:
+      disabled: "垃圾回收已禁用。"
+      summary: "已移除 {removed} 条消息。"
+  message-db.stats:
+    description: "显示消息统计信息"
+    messages:
+      summary: |
+        总消息数：{messageTotal}
+        总群组数：{guildTotal}
+        追踪的群组数：{trackedGuilds}
+        数据库大小：{dbSize}
+        垃圾回收：{gcStatus}
+      gc:
+        enabled: "已启用"
+        disabled: "已禁用"
+        day: "天"
+        untracked: "未追踪的"
+        all: "所有"
+  message-db.guild:
+    description: "管理群组"
+  message-db.stats.guilds:
+    description: "显示群组统计信息"
+    messages:
+      summary: "当前群组共有 {count} 条消息，排行第 {rank}。"
+      untracked: "当前群组未被追踪。"
+      title: "各群组消息数量"
+  message-db.guild.list-tracked:
+    description: "列出被追踪的群组"
+    messages:
+      no-tracked-guilds: "没有被追踪的群组。"
+      summary: "共有 {count} 个被追踪的群组：\n{list}"
+  message-db.guild.track:
+    description: "追踪当前群组"
+    messages:
+      guild-tracked: "已追踪当前群组。"

@@ -1,7 +1,7 @@
 {
   "name": "koishi-plugin-w-message-db",
   "description": "WillBot: Message Database",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "main": "lib/index.js",
   "typings": "lib/index.d.ts",
   "files": [
@@ -23,13 +23,17 @@
   },
   "devDependencies": {
     "@satorijs/protocol": "^1.6.0",
-    "koishi-plugin-cron": "^3.1.0"
+    "koishi-plugin-cron": "^3.1.0",
+    "koishi-plugin-w-echarts": "workspace:^"
   },
   "koishi": {
     "service": {
       "required": [
         "database",
         "cron"
+      ],
+      "optional": [
+        "echarts"
       ],
       "implements": [
         "messageDb"

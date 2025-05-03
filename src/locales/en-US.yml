@@ -8,3 +8,53 @@ message-db:
     guild-already-tracked: "This guild is already tracked."
     user-not-same-platform: "UID {0} is on another platform."
     readonly: "Message database is in readonly mode."
+    echarts-not-loaded: "ECharts plugin is not loaded."
+
+commands:
+  message-db:
+    description: "Message database"
+  message-db.list:
+    description: "List messages"
+    messages:
+      summary: "Found {found}/{total} messages. (Page {page}/{pageTotal})"
+  message-db.fetch-history:
+    description: "Fetch message history"
+    messages:
+      summary: "Fetched history of {guildCount} guilds in {duration}s.\n{okCount} succeeded while {errorCount} failed.\nFetched {messageCount} messages in total."
+  message-db.gc:
+    description: "Run garbage collection manually"
+    messages:
+      disabled: "Garbage collection is disabled."
+      summary: "Removed {removed} messages."
+  message-db.stats:
+    description: "Show message statistics"
+    messages:
+      summary: |
+        Total messages: {messageTotal}
+        Total guilds: {guildTotal}
+        Tracked guilds: {trackedGuilds}
+        Database size: {dbSize}
+        Garbage collection: {gcStatus}
+      gc:
+        enabled: "enabled"
+        disabled: "disabled"
+        day: "d"
+        untracked: "untracked"
+        all: "all"
+  message-db.stats.guilds:
+    description: "Show guilds statistics"
+    messages:
+      summary: "Current guild has {count} messages, ranking {rank}."
+      untracked: "Current guild is not tracked."
+      title: "Message count by guild"
+  message-db.guild:
+    description: "Manage guilds"
+  message-db.guild.list-tracked:
+    description: "List tracked guilds"
+    messages:
+      no-tracked-guilds: "No tracked guilds."
+      summary: "{count} tracked guilds:\n{list}"
+  message-db.guild.track:
+    description: "Track current guild"
+    messages:
+      guild-tracked: "Tracked current guild."
