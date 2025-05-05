@@ -1,10 +1,11 @@
-import { Context, z, SessionError, h, Service, Query, Session, $, Tables, Driver } from 'koishi'
-import {} from 'koishi-plugin-cron'
-import { StrictEChartsOption } from 'koishi-plugin-w-echarts'
+import { Context, z, SessionError, h, Service, Query, Session, $, Tables, Driver, pick } from 'koishi'
+import type {} from 'koishi-plugin-cron'
+import type { StrictEChartsOption } from 'koishi-plugin-w-echarts'
+import type {} from 'koishi-plugin-w-option-conflict'
 
 import dayjs from 'dayjs'
 
-import { divide, formatSize, mapFromList, stripUndefined, sumBy } from './utils'
+import { divide, formatSize, mapFromList, maxBy, stripUndefined, sumBy } from './utils'
 
 export interface TrackedGuild {
   platform: string
@@ -118,6 +119,16 @@ class MessageDbService extends Service {
     if (platform && userPlatform !== platform)
       throw new SessionError('message-db.error.user-not-same-platform', [ uid ])
     return userId
+  }
+
+  private queryGuild(
+    session: Session,
+    options: { global?: boolean, guild?: string }
+  ): { platform: string, guildId: string } | undefined {
+    if (options.global || ! session.guildId) return undefined
+    if (! options.guild) return pick(session, [ 'platform', 'guildId' ])
+    const [ platform, guildId ] = options.guild.split(':')
+    return { platform, guildId }
   }
 
   constructor(ctx: Context, public config: MessageDbService.Config) {
@@ -390,6 +401,81 @@ class MessageDbService extends Service {
         return <>
           { await eh.export() }
         </>
+      })
+
+    ctx.command('message-db.stats.time')
+      .option('global', '-G')
+      .option('guild', '-g <guild:channel>', { conflictsWith: 'global' })
+      .action(async ({ session, options }) => {
+        this.checkECharts()
+
+        const guildQuery = this.queryGuild(session, options)
+
+        const [ data, guild ] = await Promise.all([
+          ctx.database
+            .select('w-message')
+            .where({ ...guildQuery })
+            .project({
+              id: row => row.id,
+              hour: row => $.mod(
+                $.sub(
+                  $.round($.div(row.timestamp, 60 * 60 * 1000)),
+                  (ctx.root.config.timezoneOffset as number) / 60
+                ),
+                24
+              ),
+              weekday: row => $.mod(
+                $.add(
+                  $.round($.div(row.timestamp, 24 * 60 * 60 * 1000)),
+                  3
+                ),
+                7
+              ),
+            })
+            .groupBy([ 'weekday', 'hour' ], {
+              count: row => $.count(row.id),
+            })
+            .execute(),
+          guildQuery
+            ? session.bot.getGuild(guildQuery.guildId)
+            : undefined,
+        ])
+
+        const eh = this.ctx.echarts.createChart(24 * 30 + 100, 7 * 30 + 120, {
+          title: {
+            text: guildQuery
+              ? session.text('.title-guild', { name: guild.name })
+              : session.text('.title-global'),
+            left: 'center',
+            top: '5%',
+            textStyle: {
+              fontSize: 24,
+            },
+          },
+          xAxis: {
+            type: 'category',
+            data: Array.from({ length: 24 }).map((_, i) => i.toString().padStart(2, '0')),
+          },
+          yAxis: {
+            type: 'category',
+            data: [ 'Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat' ],
+          },
+          visualMap: {
+            min: 0,
+            max: maxBy(data, it => it.count),
+            calculable: true,
+            show: false
+          },
+          series: {
+            type: 'heatmap',
+            silent: true,
+            label: { show: true },
+            data: data.map(it => [ it.hour, it.weekday, it.count ]),
+          },
+          backgroundColor: '#fff'
+        })
+
+        return eh.export()
       })
 
     ctx.command('message-db.guild', { authority: 4 })

@@ -24,6 +24,11 @@ export const divide: Divide = <T, U extends T>(arr: T[], pred: (it: T) => it is 
 export const sumBy = <T>(arr: T[], getValue: (it: T) => number) =>
   arr.reduce((acc, it) => acc + getValue(it), 0)
 
+export const maxBy = <T>(arr: T[], getValue: (it: T) => number) =>
+  Math.max(...arr.map(getValue))
+export const minBy = <T>(arr: T[], getValue: (it: T) => number) =>
+  Math.min(...arr.map(getValue))
+
 export const formatSize = (size: number) => {
   const units = [ 'B', 'KB', 'MB', 'GB' ]
   while (true) {

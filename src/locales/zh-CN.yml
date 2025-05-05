@@ -55,6 +55,11 @@ commands:
     description: "显示成员统计信息"
     messages:
       title: "各成员消息数量"
+  message-db.stats.time:
+    description: "显示时段统计信息"
+    messages:
+      title-guild: "{name} 各时段消息数量"
+      title-global: "所有群各时段消息数量"
   message-db.guild.list-tracked:
     description: "列出被追踪的群组"
     messages:

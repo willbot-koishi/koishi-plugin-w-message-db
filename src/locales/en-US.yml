@@ -53,6 +53,11 @@ commands:
     description: "Show members statistics"
     messages:
       title: "Message count by member"
+  message-db.stats.time:
+    description: "Show time statistics"
+    messages:
+      title-guild: "Message count by time in {name}"
+      title-global: "Message count by time in all guilds"
   message-db.guild:
     description: "Manage guilds"
   message-db.guild.list-tracked:
