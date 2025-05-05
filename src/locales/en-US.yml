@@ -9,6 +9,8 @@ message-db:
     user-not-same-platform: "UID {0} is on another platform."
     readonly: "Message database is in readonly mode."
     echarts-not-loaded: "ECharts plugin is not loaded."
+  misc:
+    other: "Other"
 
 commands:
   message-db:
@@ -47,6 +49,10 @@ commands:
       summary: "Current guild has {count} messages, ranking {rank}."
       untracked: "Current guild is not tracked."
       title: "Message count by guild"
+  message-db.stats.members:
+    description: "Show members statistics"
+    messages:
+      title: "Message count by member"
   message-db.guild:
     description: "Manage guilds"
   message-db.guild.list-tracked:

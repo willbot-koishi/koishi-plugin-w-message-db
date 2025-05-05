@@ -6,7 +6,11 @@ export const stripUndefined = <T extends object>(obj: T): T => {
   return obj
 }
 
-export const divide = <T, U extends T>(arr: T[], pred: (it: T) => it is U): [ U[], Exclude<T, U>[] ] => {
+interface Divide {
+  <T, U extends T>(arr: T[], pred: (it: T) => it is U): [ U[], Exclude<T, U>[] ]
+  <T>(arr: T[], pred: (it: T) => boolean): [ T[], T[] ]
+}
+export const divide: Divide = <T, U extends T>(arr: T[], pred: (it: T) => it is U): [ U[], Exclude<T, U>[] ] => {
   const trueArr: U[] = []
   const falseArr: Exclude<T, U>[] = []
   for (const it of arr)
@@ -17,6 +21,9 @@ export const divide = <T, U extends T>(arr: T[], pred: (it: T) => it is U): [ U[
   return [ trueArr, falseArr ]
 }
 
+export const sumBy = <T>(arr: T[], getValue: (it: T) => number) =>
+  arr.reduce((acc, it) => acc + getValue(it), 0)
+
 export const formatSize = (size: number) => {
   const units = [ 'B', 'KB', 'MB', 'GB' ]
   while (true) {
@@ -25,3 +32,6 @@ export const formatSize = (size: number) => {
     size /= 1024
   }
 }
+
+export const mapFromList = <T, K>(items: T[], getKey: (item: T) => K) =>
+  new Map(items.map((item) => [ getKey(item), item ]))

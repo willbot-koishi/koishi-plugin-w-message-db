@@ -1,10 +1,10 @@
 import { Context, z, SessionError, h, Service, Query, Session, $, Tables, Driver } from 'koishi'
 import {} from 'koishi-plugin-cron'
-import {} from 'koishi-plugin-w-echarts'
+import { StrictEChartsOption } from 'koishi-plugin-w-echarts'
 
 import dayjs from 'dayjs'
 
-import { divide, formatSize, stripUndefined } from './utils'
+import { divide, formatSize, mapFromList, stripUndefined, sumBy } from './utils'
 
 export interface TrackedGuild {
   platform: string
@@ -87,7 +87,12 @@ class MessageDbService extends Service {
 
   logger = this.ctx.logger('w-message-db')
 
-  checkInGuild(session: Session) {
+  private checkECharts() {
+    if (! this.ctx.echarts)
+      throw new SessionError('message-db.error.echarts-not-loaded')
+  }
+
+  private checkInGuild(session: Session) {
     if (! session.guildId)
       throw new SessionError('message-db.error.guild-only')
   }
@@ -97,17 +102,17 @@ class MessageDbService extends Service {
       || this.config.trackedGuilds.some(it => it.platform === platform && it.id === guildId)
   }
 
-  checkTracked(session: Session) {
+  private checkTracked(session: Session) {
     if (! this.isTracked(session))
       throw new SessionError('message-db.error.guild-not-tracked')
   }
 
-  checkNotReadonly() {
+  private checkNotReadonly() {
     if (this.config.readonly)
       throw new SessionError('message-db.error.readonly')
   }
 
-  validateUid(uid: string | undefined, platform?: string) {
+  private validateUid(uid: string | undefined, platform?: string) {
     if (! uid) return undefined
     const [ userPlatform, userId ] = uid.split(':')
     if (platform && userPlatform !== platform)
@@ -230,7 +235,10 @@ class MessageDbService extends Service {
           {
             messages.map(({ username, timestamp, content }) => (
               <message>
-                <b>{ username }{ options.withTime ? ` [${dayjs(timestamp).format('YYYY-MM-DD HH:mm:ss')}]` : '' }:</b>
+                <b>
+                  { username }
+                  { options.withTime ? ` [${dayjs(timestamp).format('YYYY-MM-DD HH:mm:ss')}]` : '' }:
+                </b>
                 <br />
                 { this.renderMessage(content) }
               </message>
@@ -240,8 +248,9 @@ class MessageDbService extends Service {
       })
 
     ctx.command('message-db.fetch-history', { authority: 3 })
-      .action(async ({ session }) => {
-        this.checkNotReadonly()
+      .option('force', '-f Fetch history even if database is readonly')
+      .action(async ({ session, options }) => {
+        if (! options.force) this.checkNotReadonly()
 
         const startTime = Date.now()
         const result = await this.fetchHistory()
@@ -297,51 +306,38 @@ class MessageDbService extends Service {
 
     ctx.command('message-db.stats.guilds')
       .action(async ({ session }) => {
-        if (! ctx.echarts) throw new SessionError('message-db.error.echarts-not-loaded')
+        this.checkECharts()
 
-        const data = await ctx.database
-          .select('w-message')
-          .groupBy([ 'platform', 'guildId' ], {
-            count: row => $.count(row.id),
-          })
-          .orderBy('count', 'desc')
-          .execute()
+        const [ data, guildMap ] = await Promise.all([
+          ctx.database
+            .select('w-message')
+            .groupBy([ 'platform', 'guildId' ], {
+              count: row => $.count(row.id),
+            })
+            .orderBy('count', 'desc')
+            .execute(),
+          session.bot
+            .getGuildList()
+            .then(it => mapFromList(it.data, it => it.id)),
+        ])
 
-        const { data: guildList } = await session.bot.getGuildList()
-        const guildMap = new Map(guildList.map(guild => [ guild.id, guild ]))
-
-        const eh = this.ctx.echarts.createChart(600, 450, {
-          title: {
-            text: session.text('.title'),
-            left: 'center',
-            top: '5%',
-            textStyle: {
-              fontSize: 24,
-            },
-          },
-          backgroundColor: '#fff',
-          series: {
-            type: 'pie',
-            width: '100%',
-            height: '100%',
-            left: 'center',
-            top: '5%',
-            radius: '60%',
+        const eh = this.ctx.echarts.createChart(
+          600, 600,
+          this.getPieChartOption({
+            session,
             data: data.map(({ platform, guildId, count }) => ({
               name: (platform === session.platform
                 ? guildMap.get(guildId)?.name
                 : undefined
               ) ?? `${platform}:${guildId}`,
               value: count,
-            })),
-            label: {
-              formatter: (params) => `${params.name}: ${params.value}`,
-              overflow: 'breakAll',
-            },
-          },
-        })
+            }))
+          })
+        )
 
-        const index = data.findIndex(it => it.platform === session.platform && it.guildId === session.guildId)
+        const index = data.findIndex(
+          it => it.platform === session.platform && it.guildId === session.guildId
+        )
         const rank = index + 1
         const count = data[index].count
 
@@ -351,6 +347,48 @@ class MessageDbService extends Service {
             ? session.text('.summary', { count, rank })
             : session.text('.untracked')
           }
+        </>
+      })
+
+    ctx.command('message-db.stats.members')
+      .action(async ({ session }) => {
+        this.checkECharts()
+        this.checkInGuild(session)
+
+        const { platform, guildId } = session
+        const [ data, memberMap ] = await Promise.all([
+          ctx.database
+            .select('w-message')
+            .where({ platform, guildId })
+            .groupBy('userId', {
+              count: row => $.count(row.id),
+            })
+            .orderBy('count', 'desc')
+            .execute(),
+          session.bot
+            .getGuildMemberList(guildId)
+            .then(it => mapFromList(it.data, it => it.user.id)),
+        ])
+
+        const eh = this.ctx.echarts.createChart(
+          600, 600,
+          this.getPieChartOption({
+            session,
+            data: data.map(({ userId, count }) => {
+              const member = memberMap.get(userId)
+              return {
+                name: (platform === session.platform
+                  ? member?.nick || member?.user.name
+                  : undefined
+                ) ?? `${platform}:${userId}`,
+                value: count,
+              }
+            })
+          })
+        )
+
+        return <>
+          { await eh.export() }
         </>
       })
 
@@ -426,6 +464,9 @@ class MessageDbService extends Service {
         )
         : true,
     ))
+
+    this.logger.info('collected %d messages', removed)
+
     return removed
   }
 
@@ -439,7 +480,7 @@ class MessageDbService extends Service {
         const iter = bot.getMessageIter(guildId)
         let count = 0
         for await (const msg of iter) {
-          if (msg.id === managerBotId) continue
+          if (! msg.content) continue
 
           const message = ({
             id: msg.id,
@@ -488,7 +529,7 @@ class MessageDbService extends Service {
     return result
   }
 
-  renderMessage(content: string) {
+  private renderMessage(content: string) {
     // TODO: Better message rendering.
     return h.transform(h.parse(content), {
       json: ({ data }) => {
@@ -496,6 +537,46 @@ class MessageDbService extends Service {
         return '[]'
       }
     })
+  }
+
+  private getPieChartOption({ session, data }: {
+    session: Session
+    data: { name: string, value: number }[]
+  }): StrictEChartsOption {
+    const total = sumBy(data, it => it.value)
+    const threshold = total * 0.01
+    const [ majors, minors ] = divide(data, it => it.value > threshold)
+    const other = {
+      name: session.text('message-db.misc.other'),
+      value: sumBy(minors, it => it.value)
+    }
+    data = majors
+    if (other.value > 0) data.push(other)
+
+    return {
+      title: {
+        text: session.text('.title'),
+        left: 'center',
+        top: '5%',
+        textStyle: {
+          fontSize: 24,
+        },
+      },
+      backgroundColor: '#fff',
+      series: {
+        type: 'pie',
+        width: '100%',
+        height: '100%',
+        left: 'center',
+        top: '5%',
+        radius: '60%',
+        data,
+        label: {
+          formatter: (params) => `${params.name}: ${params.value}`,
+          overflow: 'breakAll',
+        },
+      },
+    }
   }
 }
 
