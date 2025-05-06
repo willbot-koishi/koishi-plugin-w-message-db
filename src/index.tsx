@@ -1,11 +1,19 @@
-import { Context, z, SessionError, h, Service, Query, Session, $, Tables, Driver, pick } from 'koishi'
+import {
+  Context, SessionError, Service, Session, Bot,
+  Query, Tables, Driver,
+  pick, z, h, $,
+} from 'koishi'
 import type {} from 'koishi-plugin-cron'
 import type { StrictEChartsOption } from 'koishi-plugin-w-echarts'
 import type {} from 'koishi-plugin-w-option-conflict'
+import type { NapCatBot } from 'koishi-plugin-adapter-napcat'
 
 import dayjs from 'dayjs'
 
-import { divide, formatSize, mapFromList, maxBy, stripUndefined, sumBy } from './utils'
+import {
+  divide, formatSize, mapFromList, maxBy, stripUndefined, sumBy,
+  Duration, parseDuration
+} from './utils'
 
 export interface TrackedGuild {
   platform: string
@@ -33,42 +41,13 @@ declare module 'koishi' {
   }
 }
 
-interface Duration {
-  start: number | null
-  end: number | null
+export interface FetchHistoryOptions {
+  duration: Duration
+  stopOnOld?: boolean
+  maxCount?: number
 }
 
-const parseDate = (dateStr: string): number | null => {
-  if (! dateStr) return null
-  const date = dayjs(dateStr)
-
-  if (! date.isValid())
-    throw new SessionError('message-db.error.duration.invalid-date', [ dateStr ])
-
-  return date.valueOf()
-}
-
-const parseDuration = (durationStr: string): Duration => {
-  const [ start, end ] = durationStr
-    .split(/~(?!.*~)/)
-    .map(str => parseDate(str.trim()))
-
-  if (start && end && start >= end)
-    throw new SessionError('message-db.error.duration.end-before-start')
-
-  return { start, end }
-}
-
-const durationToQuery = ({ start, end }: Duration) => {
-  return {
-    timestamp: stripUndefined({
-      $gte: start ?? undefined,
-      $lte: end ?? undefined,
-    })
-  }
-}
-
-export type FetchHistoryResult = {
+export interface FetchHistoryResult {
   results: FetchHistoryGuildResult[]
   errorCount: number
   okCount: number
@@ -78,7 +57,7 @@ export type FetchHistoryResult = {
 export type FetchHistoryGuildResult =
   | { guild: TrackedGuild, type: 'error', error: 'bot-not-available' }
   | { guild: TrackedGuild, type: 'error', error: 'internal-error', internal: any }
-  | { guild: TrackedGuild, type: 'ok', count: number, done: boolean }
+  | { guild: TrackedGuild, type: 'ok', inserted: number, exit: 'reached-max' | 'exhausted' | 'done' }
 
 class MessageDbService extends Service {
   static inject = {
@@ -98,6 +77,12 @@ class MessageDbService extends Service {
       throw new SessionError('message-db.error.guild-only')
   }
 
+  /**
+   * Check if the guild is tracked.
+   * @param platform The platform name
+   * @param guildId The guild ID
+   * @param force Whether to force the check when `requireTracking` is disabled
+   */
   isTracked({ platform, guildId }: { platform: string, guildId: string }, force = false) {
     return (! this.config.requireTracking && ! force)
       || this.config.trackedGuilds.some(it => it.platform === platform && it.id === guildId)
@@ -130,6 +115,17 @@ class MessageDbService extends Service {
     const [ platform, guildId ] = options.guild.split(':')
     return { platform, guildId }
   }
+
+  private queryDuration({ start, end }: Duration) {
+    return {
+      timestamp: stripUndefined({
+        $gte: start ?? undefined,
+        $lte: end ?? undefined,
+      })
+    }
+  }
+
+  private launchTime: number
 
   constructor(ctx: Context, public config: MessageDbService.Config) {
     super(ctx, 'messageDb')
@@ -180,6 +176,7 @@ class MessageDbService extends Service {
       return
     }
 
+    this.launchTime = Date.now()
     ctx.on('message', saveMessage)
     ctx.on('send', saveMessage)
 
@@ -203,7 +200,7 @@ class MessageDbService extends Service {
 
         const { platform, guildId } = session
 
-        const durationQuery = durationToQuery(parseDuration(options.duration ?? ''))
+        const durationQuery = this.queryDuration(parseDuration(options.duration))
 
         const userId = this.validateUid(options.user, platform)
 
@@ -211,7 +208,9 @@ class MessageDbService extends Service {
           platform,
           guildId,
           userId: userId ?? {},
-          content: options.search ? { $regex: options.search } : {},
+          content: options.search
+            ? { $regex: options.search }
+            : {},
           ...durationQuery,
         }
 
@@ -258,13 +257,18 @@ class MessageDbService extends Service {
         </message>
       })
 
-    ctx.command('message-db.fetch-history', { authority: 3 })
+    ctx.command('message-db.fetch-history [duration:string]', { authority: 3 })
       .option('force', '-f Fetch history even if database is readonly')
-      .action(async ({ session, options }) => {
+      .option('maxCount', '-m <count:posint> Maximum number of messages to fetch')
+      .action(async ({ session, options }, duration) => {
         if (! options.force) this.checkNotReadonly()
 
         const startTime = Date.now()
-        const result = await this.fetchHistory()
+        const result = await this.fetchHistory({
+          duration: parseDuration(duration),
+          stopOnOld: false,
+          maxCount: options.maxCount,
+        })
         const endTime = Date.now()
 
         return session.text('.summary', {
@@ -329,7 +333,7 @@ class MessageDbService extends Service {
             .execute(),
           session.bot
             .getGuildList()
-            .then(it => mapFromList(it.data, it => it.id)),
+            .then(list => mapFromList(list.data, it => it.id)),
         ])
 
         const eh = this.ctx.echarts.createChart(
@@ -378,7 +382,7 @@ class MessageDbService extends Service {
             .execute(),
           session.bot
             .getGuildMemberList(guildId)
-            .then(it => mapFromList(it.data, it => it.user.id)),
+            .then(list => mapFromList(list.data, it => it.user.id)),
         ])
 
         const eh = this.ctx.echarts.createChart(
@@ -398,36 +402,40 @@ class MessageDbService extends Service {
           })
         )
 
-        return <>
-          { await eh.export() }
-        </>
+        return eh.export()
       })
 
     ctx.command('message-db.stats.time')
       .option('global', '-G')
       .option('guild', '-g <guild:channel>', { conflictsWith: 'global' })
+      .option('user', '-u <user:user>')
       .action(async ({ session, options }) => {
         this.checkECharts()
 
         const guildQuery = this.queryGuild(session, options)
+        const userQuery = options.user
+          ? { userId: this.validateUid(options.user, session.platform) }
+          : undefined
+
+        const timezoneOffset = (ctx.root.config.timezoneOffset as number) * 60 * 1000
 
         const [ data, guild ] = await Promise.all([
           ctx.database
             .select('w-message')
-            .where({ ...guildQuery })
+            .where({
+              ...guildQuery,
+              ...userQuery,
+            })
             .project({
               id: row => row.id,
               hour: row => $.mod(
-                $.sub(
-                  $.round($.div(row.timestamp, 60 * 60 * 1000)),
-                  (ctx.root.config.timezoneOffset as number) / 60
-                ),
+                $.floor($.div($.sub(row.timestamp, timezoneOffset), 60 * 60 * 1000)),
                 24
               ),
               weekday: row => $.mod(
                 $.add(
-                  $.round($.div(row.timestamp, 24 * 60 * 60 * 1000)),
-                  3
+                  $.floor($.div($.sub(row.timestamp, timezoneOffset), 24 * 60 * 60 * 1000)),
+                  4
                 ),
                 7
               ),
@@ -486,13 +494,13 @@ class MessageDbService extends Service {
         if (! trackedGuilds.length)
           return session.text('.no-tracked-guilds')
 
-        const countMap = new Map((await this.ctx.database
+        const countMap = await this.ctx.database
           .select('w-message')
           .groupBy('guildId', {
             count: row => $.count(row.id)
           })
           .execute()
-        ).map(it => [ it.guildId, it.count ]))
+          .then(list => new Map(list.map(it => [ it.guildId, it.count ])))
 
         const guilds = trackedGuilds.map(guild => ({
           ...guild,
@@ -529,10 +537,19 @@ class MessageDbService extends Service {
 
   async start() {
     // Fetch message history of tracked guilds on start.
-    if (! this.config.readonly)
-      await this.fetchHistory()
+    if (this.config.readonly) return
+    await this.fetchHistory({
+      duration: {
+        start: 0,
+        end: this.launchTime,
+      }
+    })
   }
 
+  /**
+   * Run garbage collection to remove old messages.
+   * @returns The number of removed messages
+   */
   async gc(): Promise<number | null> {
     if (! this.config.gc.enabled) return null
 
@@ -556,49 +573,130 @@ class MessageDbService extends Service {
     return removed
   }
 
-  async fetchHistory(): Promise<FetchHistoryResult> {
-    const results = await Promise.all(this.config.trackedGuilds.map(async (guild): Promise<FetchHistoryGuildResult> => {
-      const { platform, id: guildId, managerBotId } = guild
-      const bot = this.ctx.bots.find(it => it.platform === platform && it.selfId === managerBotId)
-      if (! bot || ! bot.isActive)
-        return { guild, type: 'error', error: 'bot-not-available' }
-      try {
-        const iter = bot.getMessageIter(guildId)
-        let count = 0
-        for await (const msg of iter) {
-          if (! msg.content) continue
+  /**
+   * Get an asynchronous message iterator of `guildId` from the `bot`.
+   * @param bot The bot
+   * @param guildId The guild ID
+   * @param startToken The token to start from
+   * @param limit The message count limit for each page
+   */
+  async * getMessageIter(bot: Bot, guildId: string, startToken?: string, limit?: number) {
+    let next = startToken
+    while (true) {
+      const list = await bot.getMessageList(guildId, next, 'before', limit)
+      if (! list.data) return
 
-          const message = ({
-            id: msg.id,
-            platform,
-            guildId,
-            userId: msg.user.id,
-            username: msg.user.nick || msg.user.name,
-            content: msg.content,
-            timestamp: msg.timestamp,
-          })
+      list.data.reverse()
+      yield * list.data
 
-          const { inserted } = await this.ctx.database.upsert('w-message', [ message ])
-          if (! inserted) break
+      if (! list.next) return
+      next = list.next
+    }
+  }
 
-          if (++ count === this.config.maxHistoryFetchingCount)
-            return { guild, type: 'ok', count, done: false }
+  /**
+   * Get the start token of the message history before the specified time.
+   * @param bot The bot
+   * @param time The timestamp to start from
+   */
+  async getStartTokenBefore(bot: Bot, time: number): Promise<string | undefined> {
+    // If the bot is a NapCat bot,
+    // we can use the last message ID before the time as the start token.
+    if (bot.platform === 'onebot' && (bot.internal as NapCatBot<Context>).isNapCat) {
+      const [ message ] = await this.ctx.database
+        .select('w-message')
+        .where({ timestamp: { $lt: time } })
+        .orderBy('timestamp', 'desc')
+        .limit(1)
+        .execute()
+      if (message) return message.id
+    }
+  }
+
+  /**
+   * Fetch message history from all tracked guilds.
+   * @param options.duration The duration to fetch messages
+   * @param options.stopOnOld Whether to stop fetching when getting an old message
+   * @param options.maxCount The maximum number of messages to fetch
+   */
+  async fetchHistory({
+    duration,
+    stopOnOld = true,
+    maxCount = this.config.historyFetching.maxCount,
+  }: FetchHistoryOptions): Promise<FetchHistoryResult> {
+    const results = await Promise.all(
+      // Fetch message history from all tracked guilds.
+      this.config.trackedGuilds.map(async (guild): Promise<FetchHistoryGuildResult> => {
+        // Get the manager bot for the guild.
+        const { platform, id: guildId, managerBotId } = guild
+        const bot = this.ctx.bots.find(it => it.platform === platform && it.selfId === managerBotId)
+        // Check if the manager bot is available.
+        if (! bot || ! bot.isActive)
+          return { guild, type: 'error', error: 'bot-not-available' }
+
+        // We will fetch message history from new to old.
+        // If `duration.end` is specified, we will start from the last message before the end;
+        // otherwise, we will start from the recent message.
+        const startToken = duration.end
+          ? await this.getStartTokenBefore(bot, duration.end)
+          : undefined
+
+        // Start fetching message history.
+        try {
+          // Get the asynchronous message iterator from `startToken`.
+          const iter = this.getMessageIter(bot, guildId, startToken, this.config.historyFetching.pageSize)
+          let count = 0
+          let inserted = 0
+          for await (const msg of iter) {
+            // Fetch no more than `maxCount` messages.
+            if (count ++ === maxCount)
+              return { guild, type: 'ok', inserted, exit: 'reached-max' }
+
+            // Skip empty messages.
+            if (! msg.content) continue
+
+            // Construct the `TrackedMessage` object.
+            const { id, content, timestamp } = msg
+            const message = ({
+              id,
+              platform,
+              guildId,
+              userId: msg.user.id,
+              username: msg.user.nick || msg.user.name,
+              content,
+              timestamp,
+            })
+
+            // Try to insert it into the database.
+            const { inserted: insertedIt } = await this.ctx.database.upsert('w-message', [ message ])
+            inserted += insertedIt
+
+            // The fetching is done if
+            // 1. `stopOnOld` is enabled and the message exists in the database;
+            // 2. the message is older than the `duration.start`.
+            if (
+              ! insertedIt && stopOnOld ||
+              timestamp < duration.start
+            ) return { guild, type: 'ok', inserted, exit: 'done' }
+          }
+
+          // 
+          return { guild, type: 'ok', inserted, exit: 'exhausted' }
         }
+        catch (err) {
+          this.logger.error(err)
+          return { guild, type: 'error', error: 'internal-error', internal: err }
+        }
+      })
+    )
 
-        return { guild, type: 'ok', count, done: true }
-      }
-      catch (err) {
-        this.logger.error(err)
-        return { guild, type: 'error', error: 'internal-error', internal: err }
-      }
-    }))
-
+    // Log the results.
     const [ errors, oks ] = divide(results, it => it.type === 'error')
     const result: FetchHistoryResult = {
       results,
       errorCount: errors.length,
       okCount: oks.length,
-      messageCount: oks.reduce((acc, { count }) => acc + count, 0),
+      messageCount: oks.reduce((acc, { inserted: count }) => acc + count, 0),
     }
 
     this.logger.info(`Fetch message history in ${results.length} guilds:\n${
@@ -606,7 +704,9 @@ class MessageDbService extends Service {
         .map(result => {
           const { guild, type } = result
           return `  - ${guild.platform}:${guild.id} @ ${guild.managerBotId}: ${
-            type === 'ok' ? `√ (fetched ${result.count} messages)` : `× (${result.error})`
+            type === 'ok'
+              ? `√ (fetched ${result.inserted} messages, ${result.exit})`
+              : `× (${result.error})`
           }`
         })
         .join('\n')
@@ -620,7 +720,7 @@ class MessageDbService extends Service {
     return h.transform(h.parse(content), {
       json: ({ data }) => {
         if (data.includes('[聊天记录]')) return '[聊天记录]'
-        return '[]'
+        return '[JSON]'
       }
     })
   }
@@ -673,13 +773,18 @@ interface MessageGcConfig {
   untrackedOnly: boolean
 }
 
+interface HistoryFetchingConfig {
+  maxCount: number
+  pageSize: number
+}
+
 namespace MessageDbService {
   export interface Config {
     readonly: boolean
     trackedGuilds: TrackedGuild[]
     requireTracking: boolean
     pageSize: number
-    maxHistoryFetchingCount: number
+    historyFetching: HistoryFetchingConfig
     gc: MessageGcConfig
   }
 
@@ -703,10 +808,18 @@ namespace MessageDbService {
       .natural()
       .default(30)
       .description('Number of messages to display per page.'),
-    maxHistoryFetchingCount: z
-      .natural()
-      .default(100)
-      .description('Maximum number of history messages to fetch in one go.'),
+    historyFetching: z.
+      object({
+        maxCount: z
+          .natural()
+          .default(1024)
+          .description('Maximum number of history messages to fetch in the whole task.'),
+        pageSize: z
+          .natural()
+          .default(64)
+          .description('Number of history messages to fetch in one request.')
+      })
+      .description('History fetching'),
     gc: z
       .object({
         enabled: z

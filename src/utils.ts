@@ -1,3 +1,7 @@
+import { SessionError } from 'koishi'
+
+import dayjs from 'dayjs'
+
 export const stripUndefined = <T extends object>(obj: T): T => {
   for (const key in obj)
     if (obj[key] === undefined)
@@ -40,3 +44,29 @@ export const formatSize = (size: number) => {
 
 export const mapFromList = <T, K>(items: T[], getKey: (item: T) => K) =>
   new Map(items.map((item) => [ getKey(item), item ]))
+
+export interface Duration {
+  start: number | null
+  end: number | null
+}
+
+export const parseDate = (dateStr: string): number | null => {
+  if (! dateStr) return null
+  const date = dayjs(dateStr)
+
+  if (! date.isValid())
+    throw new SessionError('message-db.error.duration.invalid-date', [ dateStr ])
+
+  return date.valueOf()
+}
+
+export const parseDuration = (durationStr: string = ''): Duration => {
+  const [ start, end ] = durationStr
+    .split(/~(?!.*~)/)
+    .map(str => parseDate(str.trim()))
+
+  if (start && end && start >= end)
+    throw new SessionError('message-db.error.duration.end-before-start')
+
+  return { start, end }
+}
