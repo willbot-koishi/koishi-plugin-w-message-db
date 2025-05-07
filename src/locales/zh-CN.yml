@@ -9,8 +9,14 @@ message-db:
     user-not-same-platform: "UID {0} 属于另一个平台。"
     readonly: "消息数据库处于只读模式。"
     echarts-not-loaded: "ECharts 插件未加载。"
-  misc:
+
+  chart:
     other: "其他"
+    title:
+      guilds: "各群组消息数量"
+      members: "各成员消息数量"
+      time-guild: "{name} 各时段消息数量"
+      time-global: "所有群各时段消息数量"
 
 commands:
   message-db:
@@ -50,16 +56,10 @@ commands:
     messages:
       summary: "当前群组共有 {count} 条消息，排行第 {rank}。"
       untracked: "当前群组未被追踪。"
-      title: "各群组消息数量"
   message-db.stats.members:
     description: "显示成员统计信息"
-    messages:
-      title: "各成员消息数量"
   message-db.stats.time:
     description: "显示时段统计信息"
-    messages:
-      title-guild: "{name} 各时段消息数量"
-      title-global: "所有群各时段消息数量"
   message-db.guild.list-tracked:
     description: "列出被追踪的群组"
     messages:
