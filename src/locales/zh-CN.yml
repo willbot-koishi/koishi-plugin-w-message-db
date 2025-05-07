@@ -21,27 +21,41 @@ message-db:
 commands:
   message-db:
     description: "消息数据库"
+
   message-db.list:
     description: "列出消息"
+    options:
+      guild: "指定群"
+      duration: "指定时段"
+      user: "指定用户"
+      page: "选择页码"
+      withTime: "显示消息时间戳"
+      search: "用于搜索消息的正则表达式"
     messages:
       summary: "找到 {found}/{total} 条消息。（第 {page}/{pageTotal} 页）"
+
   message-db.fetch-history:
     description: "获取消息历史"
+    options:
+      force: "数据库处于只读模式时强制获取历史"
+      maxCount: "获取消息的最大数量"
     messages:
       summary: "在 {duration} 秒内获取了 {guildCount} 个群组的历史。\n{okCount} 成功，{errorCount} 失败。\n共获取了 {messageCount} 条消息。"
+
   message-db.gc:
     description: "手动运行垃圾回收"
     messages:
       disabled: "垃圾回收已禁用。"
       summary: "已移除 {removed} 条消息。"
+
   message-db.stats:
     description: "显示消息统计信息"
     messages:
       summary: |
-        总消息数：{messageTotal}
-        总群组数：{guildTotal}
-        追踪的群组数：{trackedGuilds}
-        数据库大小：{dbSize}
+        总消息数：{messageCount}
+        总群组数：{guildCount}
+        追踪的群组数：{trackedGuildCount}
+        数据库大小：{tableSize}
         垃圾回收：{gcStatus}
       gc:
         enabled: "已启用"
@@ -49,22 +63,34 @@ commands:
         day: "天"
         untracked: "未追踪的"
         all: "所有"
+
   message-db.guild:
     description: "管理群组"
+
   message-db.stats.guilds:
     description: "显示群组统计信息"
     messages:
       summary: "当前群组共有 {count} 条消息，排行第 {rank}。"
       untracked: "当前群组未被追踪。"
+
   message-db.stats.members:
     description: "显示成员统计信息"
+
   message-db.stats.time:
     description: "显示时段统计信息"
-  message-db.guild.list-tracked:
-    description: "列出被追踪的群组"
+    options:
+      global: "获取所有群组的统计信息"
+      guild: "指定群组"
+      user: "指定用户"
+
+  message-db.guild.list:
+    description: "列出保存的群组"
+    options:
+      tracked: "仅列出被追踪的群组"
     messages:
-      no-tracked-guilds: "没有被追踪的群组。"
-      summary: "共有 {count} 个被追踪的群组：\n{list}"
+      summary: "共有 {count} 个群组：\n{list}"
+      tracked: "已追踪"
+
   message-db.guild.track:
     description: "追踪当前群组"
     messages:

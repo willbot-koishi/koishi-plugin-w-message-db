@@ -21,27 +21,41 @@ message-db:
 commands:
   message-db:
     description: "Message database"
+
   message-db.list:
     description: "List messages"
+    options:
+      guild: "Specify guild"
+      duration: "Specify duration"
+      user: "Specify user"
+      page: "Choose page number"
+      withTime: "Show message timestamps"
+      search: "Regex to search in messages"
     messages:
       summary: "Found {found}/{total} messages. (Page {page}/{pageTotal})"
+
   message-db.fetch-history:
     description: "Fetch message history"
+    options:
+      force: "Fetch history even if database is readonly"
+      maxCount: "Maximum number of messages to fetch"
     messages:
       summary: "Fetched history of {guildCount} guilds in {duration}s.\n{okCount} succeeded while {errorCount} failed.\nFetched {messageCount} messages in total."
+
   message-db.gc:
     description: "Run garbage collection manually"
     messages:
       disabled: "Garbage collection is disabled."
       summary: "Removed {removed} messages."
+
   message-db.stats:
     description: "Show message statistics"
     messages:
       summary: |
-        Total messages: {messageTotal}
-        Total guilds: {guildTotal}
-        Tracked guilds: {trackedGuilds}
-        Database size: {dbSize}
+        Total messages: {messageCount}
+        Total guilds: {guildCount}
+        Tracked guilds: {trackedGuildCount}
+        Database size: {tableSize}
         Garbage collection: {gcStatus}
       gc:
         enabled: "enabled"
@@ -49,22 +63,34 @@ commands:
         day: "d"
         untracked: "untracked"
         all: "all"
+
   message-db.stats.guilds:
     description: "Show guilds statistics"
     messages:
       summary: "Current guild has {count} messages, ranking {rank}."
       untracked: "Current guild is not tracked."
+
   message-db.stats.members:
     description: "Show members statistics"
+
   message-db.stats.time:
     description: "Show time statistics"
+    options:
+      global: "Get statistics of all guilds"
+      guild: "Specify guild"
+      user: "Specify user"
+
   message-db.guild:
     description: "Manage guilds"
-  message-db.guild.list-tracked:
-    description: "List tracked guilds"
+
+  message-db.guild.list:
+    description: "List saved guilds"
+    options:
+      tracked: "List only tracked guilds"
     messages:
-      no-tracked-guilds: "No tracked guilds."
-      summary: "{count} tracked guilds:\n{list}"
+      summary: "{count} guilds:\n{list}"
+      tracked: "Tracked"
+
   message-db.guild.track:
     description: "Track current guild"
     messages:

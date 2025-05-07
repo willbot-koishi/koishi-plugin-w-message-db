@@ -1,86 +1,115 @@
 <script setup lang="ts">
 import { onMounted, reactive, Reactive, Ref, ref } from 'vue'
 
-import { send, store } from '@koishijs/client'
-import type { MessageDbStats, MessageDbChart, MessageDbProvider } from '../src/types'
+import { send } from '@koishijs/client'
+import type { MdbStats, MdbChart } from '../src/types'
 import { formatSize } from '../shared/utils'
-import Chart from './chart.vue'
+import WChart from './chart.vue'
+import SelectGuild from './select-guild.vue'
 
-const stats = ref<MessageDbStats>(null)
-const statsGuildsChart: Ref<MessageDbChart> = ref(null)
-const statsMemberCharts: Reactive<Record<string, MessageDbChart>> = reactive({})
-const statsMemberGid: Ref<string> = ref(null)
+const stats = ref<MdbStats>(null)
+const statsGuildsChart: Ref<MdbChart> = ref(null)
+const statsMemberCharts: Reactive<Record<string, MdbChart>> = reactive({})
+const statsTimeCharts: Reactive<Record<string, MdbChart>> = reactive({})
+
+const statsMemberChartGid: Ref<string> = ref(null)
+const statsTimeChartGid: Ref<string> = ref('global')
 
 onMounted(async () => {
   stats.value = await send('message-db/stats')
   statsGuildsChart.value = await send('message-db/stats/guilds/chart', [ 'zh-CN' ])
-  console.info(statsGuildsChart.value)
+  statsTimeCharts.global = await send('message-db/stats/time/chart', [ 'zh-CN' ], {})
 })
 
 const loadStatsMembersChart = async () => {
-  if (! statsMemberGid.value) return
-  const [ platform, guildId ] = statsMemberGid.value.split(':')
+  if (! statsMemberChartGid.value) return
+  const [ platform, guildId ] = statsMemberChartGid.value.split(':')
   const chart = await send('message-db/stats/members/chart', [ 'zh-CN' ], { guildQuery: { platform, guildId } })
-  statsMemberCharts[statsMemberGid.value] = chart
+  statsMemberCharts[statsMemberChartGid.value] = chart
+}
+
+const loadStatsTimeChart = async () => {
+  const gid = statsTimeChartGid.value
+  let guildQuery
+  if (gid !== 'global') {
+    const [ platform, guildId ] = gid.split(':')
+    guildQuery = { platform, guildId }
+  }
+  const chart = await send('message-db/stats/time/chart', [ 'zh-CN' ], { guildQuery })
+  statsTimeCharts[statsTimeChartGid.value] = chart
 }
 </script>
 
 <template>
-  <k-layout>
+  <k-layout class="page">
     <template #header>
       消息数据库
     </template>
     <k-content #default>
-      <div class="grid">
+      <div class="cards">
         <k-card title="概览">
           <template v-if="stats">
-            总消息数：{{ stats.messageTotal }}<br />
-            总群组数：{{ stats.guildTotal }}<br />
-            追踪的群组数：{{ stats.trackedGuildsCount }}<br />
+            总消息数：{{ stats.messageCount }}<br />
+            总群组数：{{ stats.guildCount }}<br />
+            追踪的群组数：{{ stats.trackedGuildCount }}<br />
             数据库大小：{{ formatSize(stats.tableSize) }}<br />
           </template>
         </k-card>
 
-        <Chart
+        <w-chart
+          default-title="时段消息数量"
+          :chart="statsTimeCharts[statsTimeChartGid]"
+          :width="(24 * 30 + 100) * .8"
+          :height="(7 * 30 + 120) * .8"
+        >
+          <div class="group">
+            <select-guild v-model="statsTimeChartGid" :with-global="true" />
+            <k-button @click="loadStatsTimeChart">加载</k-button>
+          </div>
+        </w-chart>
+
+        <w-chart
+          default-title="群组消息数量"
           :chart="statsGuildsChart"
           :width="600"
           :height="450"
         />
 
-        <Chart
-          :chart="statsMemberGid ? statsMemberCharts[statsMemberGid] : null"
+        <w-chart
+          default-title="成员消息数量"
+          :chart="statsMemberCharts[statsMemberChartGid]"
           :width="600"
           :height="450"
         >
-          <div class="flex">
-            <el-select
-              v-model="statsMemberGid"
-              placeholder="选择群"
-            >
-              <el-option
-                v-for="guild of store.messageDb.config.trackedGuilds"
-                :key="`${guild.platform}:${guild.id}`"
-                :value="`${guild.platform}:${guild.id}`"
-              />
-            </el-select>
-
-            <k-button @click="loadStatsMembersChart">OK</k-button>
+          <div class="group">
+            <select-guild v-model="statsMemberChartGid" />
+            <k-button @click="loadStatsMembersChart">加载</k-button>
           </div>
-        </Chart>
+        </w-chart>
       </div>
     </k-content>
   </k-layout>
 </template>
 
 <style scoped>
-.grid {
+.cards {
   display: grid;
   margin: 2rem;
   gap: 2rem;
+  grid-template-columns: repeat(auto-fit, minmax(640px, 1fr));
 }
 
-.flex {
+.group {
   display: flex;
   gap: 1rem;
+}
+
+.page :deep(.k-content) {
+  max-width: unset;
+  width: 100%;
+}
+
+.page :deep(.k-button) {
+  white-space: nowrap;
 }
 </style>

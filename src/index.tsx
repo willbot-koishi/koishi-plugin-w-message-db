@@ -5,29 +5,31 @@ import {
   Query, Tables, Driver,
   pick, z, h, $,
 } from 'koishi'
-import type {} from 'koishi-plugin-cron'
 import { DataService } from '@koishijs/plugin-console'
+import type {} from 'koishi-plugin-cron'
 import type { StrictEChartsOption } from 'koishi-plugin-w-echarts'
 import type {} from 'koishi-plugin-w-option-conflict'
 import type { NapCatBot } from 'koishi-plugin-adapter-napcat'
 
 import dayjs from 'dayjs'
+import type { EChartsOption } from 'echarts'
 
 import {
-  divide, formatSize, mapFromList, maxBy, stripUndefined, sumBy,
-  Duration, parseDuration
+  divide, formatSize, mapFrom, maxBy, stripUndefined, sumBy,
+  Duration, parseDuration,
+  getGid
 } from '../shared/utils'
 import {
-  TrackedMessage, TrackedGuild,
-  MessageDbStats, MessageDbStatsGuilds, FetchHistoryOptions, FetchHistoryResult, FetchHistoryGuildResult,
-  MessageDbChart,
-  UniversalI18n,
-  MessageDbChartOptions,
-  MessageDbStatsMembers,
-  GuildQuery,
+  FetchHistoryOptions, FetchHistoryResult, FetchHistoryGuildResult,
+  SavedMessage, SavedGuild, TrackedGuild,
+  MdbStats, MdbStatsGuilds, MdbStatsMembers, MdbStatsMembersOption,
+  MdbStatsTime, MdbStatsTimeOption,
+  MdbChart, MdbChartOption, UniversalI18n,
+  GuildQuery, UserQuery,
+  MdbProviderData,
 } from './types'
 
-export class MessageDbService extends Service {
+export class MdbService extends Service {
   static inject = {
     required: [ 'database', 'cron', 'console' ],
     optional: [ 'echarts' ],
@@ -37,8 +39,10 @@ export class MessageDbService extends Service {
 
   private launchTime: number
 
-  constructor(ctx: Context, public config: MessageDbService.Config) {
+  constructor(ctx: Context, public config: MdbService.Config) {
     super(ctx, 'messageDb')
+    const that = this
+    this.launchTime = Date.now()
 
     // I18n
     void [ 'zh-CN', 'en-US' ].map((locale: string) => {
@@ -57,30 +61,53 @@ export class MessageDbService extends Service {
     }, {
       primary: 'id',
     })
+    ctx.model.extend('w-message-guild', {
+      platform: 'string',
+      guildId: 'string',
+      name: 'string',
+      managerBotId: 'string',
+      isTracked: 'boolean',
+    }, {
+      primary: [ 'platform', 'guildId' ],
+    })
 
     // Extend console.
     ctx.console.addEntry({
       dev: resolve(__dirname, '../client/index.ts'),
       prod: resolve(__dirname, '../../dist'),
     })
+
     // Provide data to console.
-    ctx.plugin(MessageDbProvider, {
-      getConfig: () => this.config,
+    ctx.plugin(class MdbProvider extends DataService<MdbProviderData> {
+      constructor(ctx: Context) {
+        super(ctx, 'messageDb')
+      }
+
+      async get() {
+        return {
+          config: that.config,
+          savedGuilds: that.savedGuilds,
+          trackedGuilds: that.trackedGuilds,
+        }
+      }
     })
+
     // Handle console events.
-    type ChartMethod = 'statsGuildsChart' | 'statsMembersChart'
-    const handleChart = <M extends ChartMethod>(method: M) => (locales: string[], args?: any) => this[method]({
+    type ChartMethod = 'statsGuildsChart' | 'statsMembersChart' | 'statsTimeChart'
+    const handleChart = <M extends ChartMethod>(method: M) => (locales: string[], param?: any) => this[method]({
       i18n: this.createI18n(locales),
       isStatic: false,
       withData: false,
-      ...args,
-    }) as ReturnType<MessageDbService[M]>
+      ...param,
+    }) as ReturnType<MdbService[M]>
 
-    ctx.console.addListener('message-db/stats', () => this.stats())
-    ctx.console.addListener('message-db/stats/guilds', () => this.statsGuilds())
+    ctx.console.addListener('message-db/stats', this.stats.bind(this))
+    ctx.console.addListener('message-db/stats/guilds', this.statsGuilds.bind(this))
     ctx.console.addListener('message-db/stats/guilds/chart', handleChart('statsGuildsChart'))
-    ctx.console.addListener('message-db/stats/members', (guildQuery: GuildQuery) => this.statsMembers(guildQuery))
+    ctx.console.addListener('message-db/stats/members', this.statsMembers.bind(this))
     ctx.console.addListener('message-db/stats/members/chart', handleChart('statsMembersChart'))
+    ctx.console.addListener('message-db/stats/time', this.statsTime.bind(this))
+    ctx.console.addListener('message-db/stats/time/chart', handleChart('statsTimeChart'))
 
     // Save messages.
     const saveMessage = async (session: Session) => {
@@ -88,15 +115,32 @@ export class MessageDbService extends Service {
       if (config.readonly) return
 
       // Ignore non-guild messages.
-      const { guildId } = session
+      const { platform, selfId, guildId, userId, username, content, timestamp, messageId } = session
       if (! session.guildId) return
 
-      // Ignore messages from untracked guilds if tracking is required.
-      if (config.requireTracking && ! config.trackedGuilds.some(it => it.id === guildId)) return
+      // Check if the guild is tracked.
+      let savedGuild = this.savedGuildMap.get(getGid(session))
+      if (! savedGuild?.isTracked) {
+        // Ignore messages from untracked guilds if `requireTracking` is enabled.
+        if (config.requireTracking) return
+        // Save untracked guilds.
+        if (! savedGuild) {
+          const { name } = await session.bot.getGuild(guildId)
+          savedGuild = {
+            platform,
+            guildId,
+            name,
+            managerBotId: selfId,
+            isTracked: false,
+          }
+          this.savedGuildMap.set(getGid(session), savedGuild)
+          await ctx.database.upsert('w-message-guild', [ savedGuild ])
+          this.logger.info('saved guild %s', getGid(session))
+        }
+      }
 
       // Save message.
-      const { platform, userId, username, content, timestamp, messageId } = session
-      const message: TrackedMessage = {
+      const message: SavedMessage = {
         id: messageId,
         platform,
         guildId,
@@ -110,7 +154,6 @@ export class MessageDbService extends Service {
       return
     }
 
-    this.launchTime = Date.now()
     ctx.on('message', saveMessage)
     ctx.on('send', saveMessage)
 
@@ -122,15 +165,15 @@ export class MessageDbService extends Service {
       .alias('mdb')
 
     ctx.command('message-db.list')
-      .option('guild', '-g <guild:channel> Guild ID to filter messages', { authority: 4 })
-      .option('duration', '-d <duration:string> Duration to filter messages')
-      .option('user', '-u <user:user> User ID to filter messages')
-      .option('page', '-p <page:number> Page number to display', { fallback: 1 })
-      .option('withTime', '-t, --with-time Show message timestamps', { fallback: false })
-      .option('search', '-s <regexp:string> Search for messages')
+      .option('guild', '-g <guild:channel>', { authority: 4 })
+      .option('duration', '-d <duration:string>')
+      .option('user', '-u <user:user>')
+      .option('page', '-p <page:number>', { fallback: 1 })
+      .option('withTime', '-t, --with-time', { fallback: false })
+      .option('search', '-s <regexp:string>')
       .action(async ({ options, session }) => {
         this.checkInGuild(session)
-        this.checkTracked(session)
+        this.checkSaved(session)
 
         const { platform, guildId } = session
 
@@ -138,7 +181,7 @@ export class MessageDbService extends Service {
 
         const userId = this.validateUid(options.user, platform)
 
-        const query: Query<TrackedMessage> = {
+        const query: Query<SavedMessage> = {
           platform,
           guildId,
           userId: userId ?? {},
@@ -192,8 +235,8 @@ export class MessageDbService extends Service {
       })
 
     ctx.command('message-db.fetch-history [duration:string]', { authority: 3 })
-      .option('force', '-f Fetch history even if database is readonly')
-      .option('maxCount', '-m <count:posint> Maximum number of messages to fetch')
+      .option('force', '-f ')
+      .option('maxCount', '-m <count:posint>')
       .action(async ({ session, options }, duration) => {
         if (! options.force) this.checkNotReadonly()
 
@@ -206,7 +249,7 @@ export class MessageDbService extends Service {
         const endTime = Date.now()
 
         return session.text('.summary', {
-          guildCount: config.trackedGuilds.length,
+          guildCount: this.savedGuildMap.size,
           duration: ((endTime - startTime) / 1000).toFixed(3),
           okCount: result.okCount,
           errorCount: result.errorCount,
@@ -225,14 +268,14 @@ export class MessageDbService extends Service {
     ctx.command('message-db.stats')
       .action(async ({ session }) => {
         const {
-          messageTotal, guildTotal, trackedGuildsCount, tableSize
+          messageCount, guildCount, trackedGuildCount, tableSize
         } = await this.stats()
 
         return session.text('.summary', {
-          messageTotal,
-          guildTotal,
-          trackedGuilds: trackedGuildsCount,
-          dbSize: formatSize(tableSize),
+          messageCount,
+          guildCount,
+          trackedGuildCount,
+          tableSize: formatSize(tableSize),
           gcStatus: this.config.gc.enabled
             ? `${session.text('.gc.enabled')} (${[
               this.config.gc.cron,
@@ -294,130 +337,80 @@ export class MessageDbService extends Service {
       .action(async ({ session, options }) => {
         this.checkECharts()
 
-        const guildQuery = this.queryGuild(session, options)
-        const userQuery = options.user
+        const userQuery: UserQuery = options.user
           ? { userId: this.validateUid(options.user, session.platform) }
           : undefined
+        
+        const guildQuery = this.queryGuild(session, options)
 
-        const timezoneOffset = (ctx.root.config.timezoneOffset as number) * 60 * 1000
-
-        const [ data, guild ] = await Promise.all([
-          ctx.database
-            .select('w-message')
-            .where({
-              ...guildQuery,
-              ...userQuery,
-            })
-            .project({
-              id: row => row.id,
-              hour: row => $.mod(
-                $.floor($.div($.sub(row.timestamp, timezoneOffset), 60 * 60 * 1000)),
-                24
-              ),
-              weekday: row => $.mod(
-                $.add(
-                  $.floor($.div($.sub(row.timestamp, timezoneOffset), 24 * 60 * 60 * 1000)),
-                  4
-                ),
-                7
-              ),
-            })
-            .groupBy([ 'weekday', 'hour' ], {
-              count: row => $.count(row.id),
-            })
-            .execute(),
-          guildQuery
-            ? session.bot.getGuild(guildQuery.guildId)
-            : undefined,
-        ])
-
-        const eh = this.ctx.echarts.createChart(24 * 30 + 100, 7 * 30 + 120, {
-          title: {
-            text: guildQuery
-              ? session.text('.title-guild', { name: guild.name })
-              : session.text('.title-global'),
-            left: 'center',
-            top: '5%',
-            textStyle: {
-              fontSize: 24,
-            },
-          },
-          xAxis: {
-            type: 'category',
-            data: Array.from({ length: 24 }).map((_, i) => i.toString().padStart(2, '0')),
-          },
-          yAxis: {
-            type: 'category',
-            data: [ 'Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat' ],
-          },
-          visualMap: {
-            min: 0,
-            max: maxBy(data, it => it.count),
-            calculable: true,
-            show: false
-          },
-          series: {
-            type: 'heatmap',
-            silent: true,
-            label: { show: true },
-            data: data.map(it => [ it.hour, it.weekday, it.count ]),
-          },
-          backgroundColor: '#fff'
+        const { option } = await this.statsTimeChart({
+          i18n: session,
+          guildQuery,
+          userQuery
         })
+
+        const eh = this.ctx.echarts.createChart(24 * 30 + 100, 7 * 30 + 120, option)
 
         return eh.export()
       })
 
     ctx.command('message-db.guild', { authority: 4 })
 
-    ctx.command('message-db.guild.list-tracked')
-      .action(async ({ session }) => {
-        const { trackedGuilds } = this.config
-        if (! trackedGuilds.length)
-          return session.text('.no-tracked-guilds')
-
-        const countMap = await this.ctx.database
-          .select('w-message')
-          .groupBy('guildId', {
-            count: row => $.count(row.id)
-          })
-          .execute()
-          .then(list => new Map(list.map(it => [ it.guildId, it.count ])))
-
-        const guilds = trackedGuilds.map(guild => ({
-          ...guild,
-          messageCount: countMap.get(guild.id) ?? 0,
-        }))
+    ctx.command('message-db.guild.list')
+      .option('tracked', '-t')
+      .action(({ session, options }) => {
+        const guilds = options.tracked ? this.trackedGuilds : this.savedGuilds
 
         return session.text('.summary', {
           count: guilds.length,
           list: guilds
-            .map(guild => `${guild.platform}:${guild.id} @ ${guild.managerBotId} * ${guild.messageCount}`)
+            .map(guild =>
+              `${ guild.isTracked ? `[${session.text('.tracked')}] ` : '' } ${guild.name} (${getGid(guild)}@${guild.managerBotId})`
+            )
             .join('\n')
         })
       })
 
     ctx.command('message-db.guild.track')
-      .action(({ session }) => {
+      .action(async ({ session }) => {
         this.checkInGuild(session)
 
-        const { platform, guildId } = session
+        const { gid, platform, guildId, selfId } = session
+        const savedGuild = this.savedGuildMap.get(gid)
 
-        if (config.trackedGuilds.some(it => it.id === guildId))
+        if (savedGuild?.isTracked)
           throw new SessionError('message-db.error.guild-already-tracked')
 
-        config.trackedGuilds.push({
-          platform,
-          id: guildId,
-          managerBotId: session.bot.selfId,
-        })
-        this.ctx.scope.update(config)
+        const { name } = await session.bot.getGuild(guildId)
+
+        const trackedGuild: SavedGuild = {
+          platform: platform,
+          guildId: guildId,
+          managerBotId: selfId,
+          name,
+          isTracked: true,
+        }
+        this.savedGuildMap.set(gid, trackedGuild)
+        await ctx.database.upsert('w-message-guild', [ trackedGuild ])
 
         return session.text('.guild-tracked')
       })
   }
 
+  savedGuildMap = new Map<string, SavedGuild>()
+  get savedGuilds() {
+    return [ ...this.savedGuildMap.values() ]
+  }
+  get trackedGuilds(): TrackedGuild[] {
+    return this.savedGuilds.filter((it): it is TrackedGuild => it.isTracked)
+  }
+
   async start() {
+    // Load saved guilds from database.
+    this.savedGuildMap = await this.ctx.database
+      .get('w-message-guild', {})
+      .then(guilds => mapFrom(guilds, getGid))
+
     // Fetch message history of tracked guilds on start.
     if (this.config.readonly) return
     await this.fetchHistory({
@@ -438,8 +431,8 @@ export class MessageDbService extends Service {
       throw new SessionError('message-db.error.guild-only')
   }
 
-  private checkTracked(guildQuery: GuildQuery) {
-    if (! this.isTracked(guildQuery))
+  private checkSaved(guildQuery: GuildQuery) {
+    if (! this.savedGuildMap.has(getGid(guildQuery)))
       throw new SessionError('message-db.error.guild-not-tracked')
   }
 
@@ -529,50 +522,47 @@ export class MessageDbService extends Service {
     }
   }
 
+  get managerBotIds() {
+    return this.savedGuilds.map(it => it.managerBotId)
+  }
   get managerBots() {
-    const managerBotIds = this.config.trackedGuilds.map(it => it.managerBotId)
-    return this.ctx.bots.filter(it => managerBotIds.includes(it.selfId))
+    return this.ctx.bots.filter(it => this.managerBotIds.includes(it.selfId))
   }
 
   getManagerBotOf(guildQuery: GuildQuery) {
-    const { platform, guildId } = guildQuery
-    const { managerBotId } = this.config.trackedGuilds
-      .find(it => it.platform === platform && it.id === guildId)
+    const { managerBotId } = this.savedGuildMap.get(getGid(guildQuery))
     return this.ctx.bots
-      .find(it => it.platform === platform && it.selfId === managerBotId)
+      .find(it => it.platform === guildQuery.platform && it.selfId === managerBotId)
   }
 
   private createI18n(locales: string[]): UniversalI18n {
     return {
-      text: (path: string, args?: Record<string, any>) =>
-        this.ctx.i18n.render(locales, [ path ], args).map(String).join(''),
+      text: (path: string, params?: Record<string, any>) =>
+        this.ctx.i18n.render(locales, [ path ], params).map(String).join(''),
     }
   }
 
-  async stats(): Promise<MessageDbStats> {
-    const [ messageTotal, guildTotal, dbStats ] = await Promise.all([
+  async stats(): Promise<MdbStats> {
+    const [ messageCount, dbStats ] = await Promise.all([
       this.ctx.database
         .select('w-message')
         .execute(row => $.count(row.id)),
-      this.ctx.database
-        .select('w-message')
-        .project({ gid: row => $.concat(row.platform, ':', row.guildId) })
-        .execute(row => $.count(row.gid)),
       this.ctx.database.stats(),
     ])
-    const trackedGuildsCount = this.config.trackedGuilds.length
+    const guildCount = this.savedGuildMap.size
+    const trackedGuildCount = this.trackedGuilds.length
     const tablesStats = dbStats.tables as Record<keyof Tables, Driver.TableStats>
     const tableSize = tablesStats['w-message'].size
 
     return {
-      messageTotal,
-      trackedGuildsCount,
-      guildTotal,
+      messageCount,
+      guildCount,
+      trackedGuildCount,
       tableSize,
     }
   }
 
-  async statsGuilds(): Promise<MessageDbStatsGuilds> {
+  async statsGuilds(): Promise<MdbStatsGuilds> {
     const [ data, guildLists ] = await Promise.all([
       this.ctx.database
         .select('w-message')
@@ -615,7 +605,7 @@ export class MessageDbService extends Service {
     i18n,
     withData = false,
     isStatic = true,
-  }: MessageDbChartOptions): Promise<MessageDbChart<MessageDbStatsGuilds>> {
+  }: MdbChartOption): Promise<MdbChart<MdbStatsGuilds>> {
     const data = await this.statsGuilds()
     return {
       option: this.getPieChartOption({
@@ -628,8 +618,10 @@ export class MessageDbService extends Service {
     }
   }
 
-  async statsMembers(guildQuery: GuildQuery): Promise<MessageDbStatsMembers> {
-    this.checkTracked(guildQuery)
+  async statsMembers({ guildQuery }: {
+    guildQuery: GuildQuery
+  }): Promise<MdbStatsMembers> {
+    this.checkSaved(guildQuery)
 
     const [ data, memberList ] = await Promise.all([
       this.ctx.database
@@ -646,7 +638,7 @@ export class MessageDbService extends Service {
         .then(it => it.data)
     ])
 
-    const memberMap = mapFromList(memberList, it => it.user.id)
+    const memberMap = mapFrom(memberList, it => it.user.id)
 
     const memberStats = data.map(({ userId, count }) => {
       const member = memberMap.get(userId)
@@ -665,10 +657,10 @@ export class MessageDbService extends Service {
     i18n,
     withData = false,
     isStatic = true,
-  }: MessageDbChartOptions & { guildQuery: GuildQuery }): Promise<MessageDbChart<MessageDbStatsMembers>> {
-    this.checkTracked(guildQuery)
+  }: MdbChartOption & MdbStatsMembersOption): Promise<MdbChart<MdbStatsMembers>> {
+    this.checkSaved(guildQuery)
 
-    const data = await this.statsMembers(guildQuery)
+    const data = await this.statsMembers({ guildQuery })
     return {
       option: this.getPieChartOption({
         title: 'members',
@@ -680,15 +672,93 @@ export class MessageDbService extends Service {
     }
   }
 
-  /**
-   * Check if the guild is tracked.
-   * @param platform The platform name
-   * @param guildId The guild ID
-   * @param force Whether to force the check when `requireTracking` is disabled
-   */
-  isTracked({ platform, guildId }: GuildQuery, force = false) {
-    return (! this.config.requireTracking && ! force)
-      || this.config.trackedGuilds.some(it => it.platform === platform && it.id === guildId)
+  async statsTime({ guildQuery, userQuery }: MdbStatsTimeOption) {
+    const timezoneOffset = (this.ctx.root.config.timezoneOffset as number) * 60 * 1000
+
+    const [ timeData, guild ] = await Promise.all([
+      this.ctx.database
+        .select('w-message')
+        .where({
+          ...guildQuery,
+          ...userQuery,
+        })
+        .project({
+          id: row => row.id,
+          hour: row => $.mod(
+            $.floor($.div($.sub(row.timestamp, timezoneOffset), 60 * 60 * 1000)),
+            24
+          ),
+          weekday: row => $.mod(
+            $.add(
+              $.floor($.div($.sub(row.timestamp, timezoneOffset), 24 * 60 * 60 * 1000)),
+              4
+            ),
+            7
+          ),
+        })
+        .groupBy([ 'weekday', 'hour' ], {
+          count: row => $.count(row.id),
+        })
+        .execute(),
+      guildQuery
+        ? this.savedGuildMap.get(getGid(guildQuery))
+        : undefined,
+    ])
+
+    return { timeData, guild }
+  }
+
+  async statsTimeChart({
+    i18n,
+    withData = false,
+    isStatic = true,
+    ...statsOption
+  }: MdbChartOption & MdbStatsTimeOption): Promise<MdbChart<MdbStatsTime>> {
+    const data = await this.statsTime(statsOption)
+    const option: EChartsOption = {
+      title: {
+        text: statsOption.guildQuery
+          ? i18n.text('message-db.chart.title.time-guild', { name: data.guild.name })
+          : i18n.text('message-db.chart.title.time-global'),
+        left: 'center',
+        top: '5%',
+        textStyle: {
+          fontSize: 24,
+        },
+      },
+      xAxis: {
+        type: 'category',
+        data: Array.from({ length: 24 }).map((_, i) => i.toString().padStart(2, '0')),
+      },
+      yAxis: {
+        type: 'category',
+        data: [ 'Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat' ],
+      },
+      visualMap: {
+        min: 0,
+        max: maxBy(data.timeData, it => it.count),
+        calculable: true,
+        show: ! isStatic,
+        orient: 'horizontal',
+        bottom: '0',
+        left: 'center',
+      },
+      grid: {
+        left: '5%',
+      },
+      series: {
+        type: 'heatmap',
+        silent: ! isStatic,
+        label: { show: true },
+        data: data.timeData.map(it => [ it.hour, it.weekday, it.count ]),
+      },
+      backgroundColor: isStatic ? '#fff' : undefined,
+    }
+
+    return {
+      option,
+      data: withData ? data : undefined,
+    }
   }
 
   /**
@@ -707,7 +777,7 @@ export class MessageDbService extends Service {
         ? $.not(
           $.in(
             $.concat(row.platform, ':', row.guildId),
-            this.config.trackedGuilds.map(it => `${it.platform}:${it.id}`)
+            this.trackedGuilds.map(getGid)
           )
         )
         : true,
@@ -771,9 +841,9 @@ export class MessageDbService extends Service {
   }: FetchHistoryOptions): Promise<FetchHistoryResult> {
     const results = await Promise.all(
       // Fetch message history from all tracked guilds.
-      this.config.trackedGuilds.map(async (guild): Promise<FetchHistoryGuildResult> => {
+      this.trackedGuilds.map(async (guild): Promise<FetchHistoryGuildResult> => {
         // Get the manager bot for the guild.
-        const { platform, id: guildId, managerBotId } = guild
+        const { platform, guildId, managerBotId } = guild
         const bot = this.ctx.bots.find(it => it.platform === platform && it.selfId === managerBotId)
         // Check if the manager bot is available.
         if (! bot || ! bot.isActive)
@@ -844,11 +914,11 @@ export class MessageDbService extends Service {
       messageCount: oks.reduce((acc, { inserted: count }) => acc + count, 0),
     }
 
-    this.logger.info(`Fetch message history in ${results.length} guilds:\n${
+    this.logger.info(`fetched message history in ${results.length} guilds:\n${
       results
         .map(result => {
           const { guild, type } = result
-          return `  - ${guild.platform}:${guild.id} @ ${guild.managerBotId}: ${
+          return `  - ${getGid(guild)} @ ${guild.managerBotId}: ${
             type === 'ok'
               ? `√ (fetched ${result.inserted} messages, ${result.exit})`
               : `× (${result.error})`
@@ -861,7 +931,7 @@ export class MessageDbService extends Service {
   }
 }
 
-interface MessageGcConfig {
+interface MdbGcConfig {
   enabled: boolean
   olderThan: number
   cron: string
@@ -873,14 +943,13 @@ interface HistoryFetchingConfig {
   pageSize: number
 }
 
-export namespace MessageDbService {
+export namespace MdbService {
   export interface Config {
     readonly: boolean
-    trackedGuilds: TrackedGuild[]
     requireTracking: boolean
     pageSize: number
     historyFetching: HistoryFetchingConfig
-    gc: MessageGcConfig
+    gc: MdbGcConfig
   }
 
   export const Config: z<Config> = z.object({
@@ -888,13 +957,6 @@ export namespace MessageDbService {
       .boolean()
       .default(false)
       .description('Whether to save messages to the database.'),
-    trackedGuilds: z
-      .array(z.object({
-        platform: z.string().description('Platform name.'),
-        id: z.string().description('Guild ID.'),
-        managerBotId: z.string().description('Manager bot ID.'), 
-      }))
-      .description('List of guilds to track messages.'),
     requireTracking: z
       .boolean()
       .default(false)
@@ -938,26 +1000,5 @@ export namespace MessageDbService {
   })
 }
 
-export class MessageDbProvider extends DataService<MessageDbProvider.Data> {
-  constructor(ctx: Context, public config: MessageDbProvider.Config) {
-    super(ctx, 'messageDb')
-  }
 
-  async get() {
-    return {
-      config: this.config.getConfig()
-    }
-  }
-}
-
-export namespace MessageDbProvider {
-  export interface Config {
-    getConfig: () => MessageDbService.Config
-  }
-
-  export interface Data {
-    config: MessageDbService.Config
-  }
-}
-
-export default MessageDbService
+export default MdbService

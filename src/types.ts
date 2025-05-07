@@ -1,42 +1,53 @@
-import { EChartsOption } from 'echarts'
-import { MessageDbService, MessageDbProvider } from '.'
-import { Duration } from '../shared/utils'
+import type { EChartsOption } from 'echarts'
 
-export type { MessageDbService, MessageDbProvider }
+import { MdbService } from '.'
+import { Duration } from '../shared/utils'
+import { DataService } from '@koishijs/plugin-console'
+
+export type { MdbService }
 
 declare module 'koishi' {
   interface Tables {
-    'w-message': TrackedMessage
+    'w-message': SavedMessage
+    'w-message-guild': SavedGuild
   }
 
   interface Context {
-    messageDb: MessageDbService
+    messageDb: MdbService
   }
 }
 
 declare module '@koishijs/plugin-console' {
   interface Events {
-    'message-db/stats': () => Promise<MessageDbStats>
-    'message-db/stats/guilds': () => Promise<MessageDbStatsGuilds>
-    'message-db/stats/guilds/chart': (locales: string[]) => Promise<MessageDbChart<MessageDbStatsGuilds>>
-    'message-db/stats/members': (guildQuery: GuildQuery) => Promise<MessageDbStatsMembers>
-    'message-db/stats/members/chart': (locales: string[], args: { guildQuery: GuildQuery }) => Promise<MessageDbChart<MessageDbStatsMembers>>
+    'message-db/stats': () => Promise<MdbStats>
+    'message-db/stats/guilds': () => Promise<MdbStatsGuilds>
+    'message-db/stats/guilds/chart': (locales: string[]) => Promise<MdbChart<MdbStatsGuilds>>
+    'message-db/stats/members': (args: MdbStatsMembersOption) => Promise<MdbStatsMembers>
+    'message-db/stats/members/chart': (locales: string[], args: MdbStatsMembersOption) => Promise<MdbChart<MdbStatsMembers>>
+    'message-db/stats/time': (args: MdbStatsTimeOption) => Promise<MdbStatsTime>
+    'message-db/stats/time/chart': (locales: string[], args: MdbStatsTimeOption) => Promise<MdbChart<MdbStatsTime>>
   }
 
   namespace Console {
     interface Services {
-      messageDb: MessageDbProvider
+      messageDb: MdbProvider
     }
   }
 }
 
-export interface TrackedGuild {
+export type MdbProvider = DataService<MdbProviderData>
+
+export interface SavedGuild {
   platform: string
-  id: string
+  guildId: string
+  name: string
   managerBotId: string
+  isTracked: boolean
 }
 
-export interface TrackedMessage {
+export type TrackedGuild = SavedGuild & { isTracked: true }
+
+export interface SavedMessage {
   id: string
   platform: string
   guildId: string
@@ -49,6 +60,10 @@ export interface TrackedMessage {
 export interface GuildQuery {
   platform: string
   guildId: string
+}
+
+export interface UserQuery {
+  userId: string
 }
 
 export interface FetchHistoryOptions {
@@ -65,40 +80,64 @@ export interface FetchHistoryResult {
 }
 
 export type FetchHistoryGuildResult =
-  | { guild: TrackedGuild, type: 'error', error: 'bot-not-available' }
-  | { guild: TrackedGuild, type: 'error', error: 'internal-error', internal: any }
-  | { guild: TrackedGuild, type: 'ok', inserted: number, exit: 'reached-max' | 'exhausted' | 'done' }
+  | { guild: SavedGuild, type: 'error', error: 'bot-not-available' }
+  | { guild: SavedGuild, type: 'error', error: 'internal-error', internal: any }
+  | { guild: SavedGuild, type: 'ok', inserted: number, exit: 'reached-max' | 'exhausted' | 'done' }
 
-export interface MessageDbStats {
-  messageTotal: number
-  trackedGuildsCount: number
-  guildTotal: number
+export interface MdbStats {
+  messageCount: number
+  guildCount: number
+  trackedGuildCount: number
   tableSize: number
 }
 
-export type MessageDbStatsGuilds = Array<{
+export type MdbStatsGuilds = Array<{
   gid: string
   name: string
   value: number
 }>
 
-export type MessageDbStatsMembers = Array<{
+export type MdbStatsMembersOption = {
+  guildQuery: GuildQuery
+}
+
+export type MdbStatsMembers = Array<{
   userId: string
   name: string
   value: number
 }>
 
+export type MdbStatsTimeOption = {
+  guildQuery?: GuildQuery
+  userQuery?: UserQuery
+}
+
+export type MdbStatsTime = {
+  timeData: Array<{
+    count: number
+    hour: number
+    weekday: number
+  }>
+  guild: SavedGuild
+}
+
 export type UniversalI18n = {
   text: (key: string, args?: Record<string, any>) => string 
 }
 
-export interface MessageDbChart<T = any> {
+export interface MdbChart<T = any> {
   option: EChartsOption
   data?: T
 }
 
-export interface MessageDbChartOptions {
-  i18n: UniversalI18n,
-  withData?: boolean,
-  isStatic?: boolean,
+export interface MdbChartOption {
+  i18n: UniversalI18n
+  withData?: boolean
+  isStatic?: boolean
+}
+
+export interface MdbProviderData {
+  config: MdbService.Config
+  savedGuilds: SavedGuild[]
+  trackedGuilds: TrackedGuild[]
 }

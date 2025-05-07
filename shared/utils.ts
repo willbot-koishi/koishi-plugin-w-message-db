@@ -1,6 +1,7 @@
 import { SessionError } from 'koishi'
 
 import dayjs from 'dayjs'
+import { GuildQuery } from '../src/types'
 
 export const stripUndefined = <T extends object>(obj: T): T => {
   for (const key in obj)
@@ -42,8 +43,12 @@ export const formatSize = (size: number) => {
   }
 }
 
-export const mapFromList = <T, K>(items: T[], getKey: (item: T) => K) =>
-  new Map(items.map((item) => [ getKey(item), item ]))
+export const mapFrom = <T, K, V = T>(
+  arr: T[],
+  getKey: <U extends T>(item: U) => K,
+  getValue?: <U extends T>(item: U) => V
+) =>
+  new Map(arr.map(it => [ getKey(it), getValue?.(it) ?? it ]))
 
 export interface Duration {
   start: number | null
@@ -70,3 +75,6 @@ export const parseDuration = (durationStr: string = ''): Duration => {
 
   return { start, end }
 }
+
+export const getGid = ({ platform, guildId }: GuildQuery) =>
+  `${platform}:${guildId}`
