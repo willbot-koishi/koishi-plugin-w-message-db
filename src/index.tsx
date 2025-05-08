@@ -389,7 +389,7 @@ export class MdbService extends Service {
   }
 
   private checkSaved(guildQuery: GuildQuery) {
-    if (! this.savedGuildMap.has(getGid(guildQuery)))
+    if (! this.isGuildSaved(guildQuery))
       throw new SessionError('message-db.error.guild-not-tracked')
   }
 
@@ -716,6 +716,14 @@ export class MdbService extends Service {
       option,
       data: withData ? data : undefined,
     }
+  }
+
+  /**
+   * Check if the guild is saved.
+   * @param guildQuery The guild to check
+   */
+  isGuildSaved(guildQuery: GuildQuery) {
+    return this.savedGuildMap.has(getGid(guildQuery))
   }
 
   /**
