@@ -38,11 +38,8 @@ export class MdbService extends Service {
 
   logger = this.ctx.logger('w-message-db')
 
-  private launchTime: number
-
   constructor(ctx: Context, public config: MdbService.Config) {
     super(ctx, 'messageDb')
-    const that = this
     this.launchTime = Date.now()
 
     // I18n
@@ -77,94 +74,6 @@ export class MdbService extends Service {
       dev: resolve(__dirname, '../client/index.ts'),
       prod: resolve(__dirname, '../../dist'),
     })
-
-    // Provide data to console.
-    ctx.plugin(class MdbProvider extends DataService<MdbProviderData> {
-      constructor(ctx: Context) {
-        super(ctx, 'messageDb')
-      }
-
-      async get() {
-        return {
-          config: that.config,
-          savedGuilds: that.savedGuilds,
-          trackedGuilds: that.trackedGuilds,
-        }
-      }
-    })
-
-    // Handle console events.
-    type ChartMethod = 'statsGuildsChart' | 'statsMembersChart' | 'statsTimeChart'
-    const handleChart = <M extends ChartMethod>(method: M) => (locales: string[], param?: any) => this[method]({
-      i18n: this.createI18n(locales),
-      isStatic: false,
-      withData: false,
-      ...param,
-    }) as ReturnType<MdbService[M]>
-
-    ctx.console.addListener('message-db/stats', this.stats.bind(this))
-    ctx.console.addListener('message-db/stats/guilds', this.statsGuilds.bind(this))
-    ctx.console.addListener('message-db/stats/guilds/chart', handleChart('statsGuildsChart'))
-    ctx.console.addListener('message-db/stats/members', this.statsMembers.bind(this))
-    ctx.console.addListener('message-db/stats/members/chart', handleChart('statsMembersChart'))
-    ctx.console.addListener('message-db/stats/time', this.statsTime.bind(this))
-    ctx.console.addListener('message-db/stats/time/chart', handleChart('statsTimeChart'))
-
-    const saveMessage = async (session: Session) => {
-      // Check readonly mode.
-      if (config.readonly) return
-
-      // Ignore non-guild messages.
-      const { platform, selfId, guildId, userId, username, timestamp, messageId } = session
-      if (! session.guildId) return
-
-      // Check if the guild is tracked.
-      let savedGuild = this.savedGuildMap.get(getGid(session))
-      if (! savedGuild?.isTracked) {
-        // Ignore messages from untracked guilds if `requireTracking` is enabled.
-        if (config.requireTracking) return
-        // Save untracked guilds.
-        if (! savedGuild) {
-          const { name } = await session.bot.getGuild(guildId)
-          savedGuild = {
-            platform,
-            guildId,
-            name,
-            managerBotId: selfId,
-            isTracked: false,
-          }
-          this.savedGuildMap.set(getGid(session), savedGuild)
-          await ctx.database.upsert('w-message-guild', [ savedGuild ])
-          this.logger.info('saved guild %s', getGid(session))
-        }
-      }
-
-      // Start message content processing.
-      let { content } = session
-      // Transfer assets.
-      if (
-        config.assetTransferring.enabled &&
-        (savedGuild.isTracked || ! this.config.assetTransferring.requireTracking) &&
-        ctx.assets
-      ) {
-        content = await ctx.assets.transform(content)
-      }
-      // Insert the message into the database.
-      const message: SavedMessage = {
-        id: messageId,
-        platform,
-        guildId,
-        userId,
-        username,
-        content,
-        timestamp
-      }
-      await ctx.database.upsert('w-message', [ message ])
-
-      return
-    }
-    ctx.on('message', saveMessage)
-    ctx.on('send', saveMessage)
 
     // Garbage collection.
     if (config.gc.enabled) ctx.cron(config.gc.cron, () => this.gc())
@@ -374,7 +283,7 @@ export class MdbService extends Service {
           count: guilds.length,
           list: guilds
             .map(guild =>
-              `${ guild.isTracked ? `[${session.text('.tracked')}] ` : '' } ${guild.name} (${getGid(guild)}@${guild.managerBotId})`
+              `- ${ guild.isTracked ? `[${session.text('.tracked')}] ` : '' }${guild.name} (${getGid(guild)}@${guild.managerBotId})`
             )
             .join('\n')
         })
@@ -406,6 +315,8 @@ export class MdbService extends Service {
       })
   }
 
+  private launchTime: number
+
   savedGuildMap = new Map<string, SavedGuild>()
   get savedGuilds() {
     return [ ...this.savedGuildMap.values() ]
@@ -420,14 +331,51 @@ export class MdbService extends Service {
       .get('w-message-guild', {})
       .then(guilds => mapFrom(guilds, getGid))
 
+    // Start saving messages.
+    this.ctx.on('message', this.saveMessage.bind(this))
+    this.ctx.on('send', this.saveMessage.bind(this))
+
     // Fetch message history of tracked guilds on start.
     if (this.config.readonly) return
-    await this.fetchHistory({
+    void this.fetchHistory({
       duration: {
         start: 0,
         end: this.launchTime,
       }
     })
+
+    // Provide data to console.
+    const that = this
+    this.ctx.plugin(class MdbProvider extends DataService<MdbProviderData> {
+      constructor(ctx: Context) {
+        super(ctx, 'messageDb')
+      }
+
+      async get() {
+        return {
+          config: that.config,
+          savedGuilds: that.savedGuilds,
+          trackedGuilds: that.trackedGuilds,
+        }
+      }
+    })
+
+    // Handle console events.
+    type ChartMethod = 'statsGuildsChart' | 'statsMembersChart' | 'statsTimeChart'
+    const handleChart = <M extends ChartMethod>(method: M) => (locales: string[], param?: any) => this[method]({
+      i18n: this.createI18n(locales),
+      isStatic: false,
+      withData: false,
+      ...param,
+    }) as ReturnType<MdbService[M]>
+
+    this.ctx.console.addListener('message-db/stats', this.stats.bind(this))
+    this.ctx.console.addListener('message-db/stats/guilds', this.statsGuilds.bind(this))
+    this.ctx.console.addListener('message-db/stats/guilds/chart', handleChart('statsGuildsChart'))
+    this.ctx.console.addListener('message-db/stats/members', this.statsMembers.bind(this))
+    this.ctx.console.addListener('message-db/stats/members/chart', handleChart('statsMembersChart'))
+    this.ctx.console.addListener('message-db/stats/time', this.statsTime.bind(this))
+    this.ctx.console.addListener('message-db/stats/time/chart', handleChart('statsTimeChart'))
   }
   
   private checkECharts() {
@@ -835,6 +783,64 @@ export class MdbService extends Service {
         .execute()
       if (message) return message.id
     }
+  }
+
+  /**
+   * Save a message to the database.
+   * @param session The session containing the message
+   */
+  async saveMessage(session: Session) {
+    // Check readonly mode.
+    if (this.config.readonly) return
+
+    // Ignore non-guild messages.
+    const { platform, selfId, guildId, userId, username, timestamp, messageId } = session
+    if (! session.guildId) return
+
+    // Check if the guild is tracked.
+    let savedGuild = this.savedGuildMap.get(getGid(session))
+    if (! savedGuild?.isTracked) {
+      // Ignore messages from untracked guilds if `requireTracking` is enabled.
+      if (this.config.requireTracking) return
+      // Save untracked guilds.
+      if (! savedGuild) {
+        const { name } = await session.bot.getGuild(guildId)
+        savedGuild = {
+          platform,
+          guildId,
+          name,
+          managerBotId: selfId,
+          isTracked: false,
+        }
+        this.savedGuildMap.set(getGid(session), savedGuild)
+        await this.ctx.database.upsert('w-message-guild', [ savedGuild ])
+        this.logger.info('saved guild %s', getGid(session))
+      }
+    }
+
+    // Start message content processing.
+    let { content } = session
+    // Transfer assets.
+    if (
+      this.config.assetTransferring.enabled &&
+      (savedGuild.isTracked || ! this.config.assetTransferring.requireTracking) &&
+      this.ctx.assets
+    ) {
+      content = await this.ctx.assets.transform(content)
+    }
+    // Insert the message into the database.
+    const message: SavedMessage = {
+      id: messageId,
+      platform,
+      guildId,
+      userId,
+      username,
+      content,
+      timestamp
+    }
+    await this.ctx.database.upsert('w-message', [ message ])
+
+    return
   }
 
   /**
