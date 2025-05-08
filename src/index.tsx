@@ -10,6 +10,7 @@ import type {} from 'koishi-plugin-cron'
 import type { StrictEChartsOption } from 'koishi-plugin-w-echarts'
 import type {} from 'koishi-plugin-w-option-conflict'
 import type { NapCatBot } from 'koishi-plugin-adapter-napcat'
+import type {} from '@koishijs/assets'
 
 import dayjs from 'dayjs'
 import type { EChartsOption } from 'echarts'
@@ -32,7 +33,7 @@ import {
 export class MdbService extends Service {
   static inject = {
     required: [ 'database', 'cron', 'console' ],
-    optional: [ 'echarts' ],
+    optional: [ 'echarts', 'assets' ],
   }
 
   logger = this.ctx.logger('w-message-db')
@@ -109,13 +110,12 @@ export class MdbService extends Service {
     ctx.console.addListener('message-db/stats/time', this.statsTime.bind(this))
     ctx.console.addListener('message-db/stats/time/chart', handleChart('statsTimeChart'))
 
-    // Save messages.
     const saveMessage = async (session: Session) => {
       // Check readonly mode.
       if (config.readonly) return
 
       // Ignore non-guild messages.
-      const { platform, selfId, guildId, userId, username, content, timestamp, messageId } = session
+      const { platform, selfId, guildId, userId, username, timestamp, messageId } = session
       if (! session.guildId) return
 
       // Check if the guild is tracked.
@@ -139,7 +139,17 @@ export class MdbService extends Service {
         }
       }
 
-      // Save message.
+      // Start message content processing.
+      let { content } = session
+      // Transfer assets.
+      if (
+        config.assetTransferring.enabled &&
+        (savedGuild.isTracked || ! this.config.assetTransferring.requireTracking) &&
+        ctx.assets
+      ) {
+        content = await ctx.assets.transform(content)
+      }
+      // Insert the message into the database.
       const message: SavedMessage = {
         id: messageId,
         platform,
@@ -153,7 +163,6 @@ export class MdbService extends Service {
 
       return
     }
-
     ctx.on('message', saveMessage)
     ctx.on('send', saveMessage)
 
@@ -931,25 +940,31 @@ export class MdbService extends Service {
   }
 }
 
-interface MdbGcConfig {
-  enabled: boolean
-  olderThan: number
-  cron: string
-  untrackedOnly: boolean
-}
-
-interface HistoryFetchingConfig {
-  maxCount: number
-  pageSize: number
-}
-
 export namespace MdbService {
+  interface AssetTransferringConfig {
+    enabled: boolean
+    requireTracking: boolean
+  }
+
+  interface GcConfig {
+    enabled: boolean
+    olderThan: number
+    cron: string
+    untrackedOnly: boolean
+  }
+
+  interface HistoryFetchingConfig {
+    maxCount: number
+    pageSize: number
+  }
+
   export interface Config {
     readonly: boolean
     requireTracking: boolean
     pageSize: number
     historyFetching: HistoryFetchingConfig
-    gc: MdbGcConfig
+    assetTransferring: AssetTransferringConfig
+    gc: GcConfig
   }
 
   export const Config: z<Config> = z.object({
@@ -977,6 +992,18 @@ export namespace MdbService {
           .description('Number of history messages to fetch in one request.')
       })
       .description('History fetching'),
+    assetTransferring: z
+      .object({
+        enabled: z
+          .boolean()
+          .default(false)
+          .description('Whether to enable asset transferring.'),
+        requireTracking: z
+          .boolean()
+          .default(true)
+          .description('Whether to require tracking guilds for asset transferring.'),
+      })
+      .description('Asset transferring'),
     gc: z
       .object({
         enabled: z
@@ -999,6 +1026,5 @@ export namespace MdbService {
       .description('Garbage collection'),
   })
 }
-
 
 export default MdbService
