@@ -1,41 +1,44 @@
 <script setup lang="ts">
+import { send } from '@koishijs/client'
+
+import type { MdbStats, MdbChart, GuildQuery, MdbRemoteError } from '../src/types'
+import { formatSize } from '../shared/utils'
+
 import { onMounted, reactive, Reactive, Ref, ref } from 'vue'
 
-import { send } from '@koishijs/client'
-import type { MdbStats, MdbChart } from '../src/types'
-import { formatSize } from '../shared/utils'
-import WChart from './chart.vue'
-import SelectGuild from './select-guild.vue'
+import WChart from './components/chart.vue'
+import SelectGuild from './components/select-guild.vue'
+import CatchError from './components/catch-error.vue'
 
-const stats = ref<MdbStats>(null)
-const statsGuildsChart: Ref<MdbChart> = ref(null)
-const statsMemberCharts: Reactive<Record<string, MdbChart>> = reactive({})
-const statsTimeCharts: Reactive<Record<string, MdbChart>> = reactive({})
+const stats = ref<MdbStats | MdbRemoteError>(null)
+const statsGuildsChart: Ref<MdbChart | MdbRemoteError> = ref(null)
+const statsMemberCharts: Reactive<Record<string, MdbChart | MdbRemoteError>> = reactive({})
+const statsTimeCharts: Reactive<Record<string, MdbChart | MdbRemoteError>> = reactive({})
 
 const statsMemberChartGid: Ref<string> = ref(null)
 const statsTimeChartGid: Ref<string> = ref('global')
 
 onMounted(async () => {
   stats.value = await send('message-db/stats')
-  statsGuildsChart.value = await send('message-db/stats/guilds/chart', [ 'zh-CN' ])
-  statsTimeCharts.global = await send('message-db/stats/time/chart', [ 'zh-CN' ], {})
+  statsGuildsChart.value = await send('message-db/statsGuildsChart', {})
+  statsTimeCharts.global = await send('message-db/statsTimeChart', {})
 })
 
 const loadStatsMembersChart = async () => {
   if (! statsMemberChartGid.value) return
   const [ platform, guildId ] = statsMemberChartGid.value.split(':')
-  const chart = await send('message-db/stats/members/chart', [ 'zh-CN' ], { guildQuery: { platform, guildId } })
+  const chart = await send('message-db/statsMembersChart', { guildQuery: { platform, guildId } })
   statsMemberCharts[statsMemberChartGid.value] = chart
 }
 
 const loadStatsTimeChart = async () => {
   const gid = statsTimeChartGid.value
-  let guildQuery
+  let guildQuery: GuildQuery
   if (gid !== 'global') {
     const [ platform, guildId ] = gid.split(':')
     guildQuery = { platform, guildId }
   }
-  const chart = await send('message-db/stats/time/chart', [ 'zh-CN' ], { guildQuery })
+  const chart = await send('message-db/statsTimeChart', { guildQuery })
   statsTimeCharts[statsTimeChartGid.value] = chart
 }
 </script>
@@ -48,12 +51,12 @@ const loadStatsTimeChart = async () => {
     <k-content #default>
       <div class="cards">
         <k-card title="概览">
-          <template v-if="stats">
+          <catch-error v-if="stats" :data="stats" #="{ data: stats }">
             总消息数：{{ stats.messageCount }}<br />
             总群组数：{{ stats.guildCount }}<br />
             追踪的群组数：{{ stats.trackedGuildCount }}<br />
             数据库大小：{{ formatSize(stats.tableSize) }}<br />
-          </template>
+          </catch-error>
         </k-card>
 
         <w-chart

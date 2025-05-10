@@ -17,22 +17,32 @@ declare module 'koishi' {
   }
 }
 
+
 declare module '@koishijs/plugin-console' {
-  interface Events {
-    'message-db/stats': () => Promise<MdbStats>
-    'message-db/stats/guilds': () => Promise<MdbStatsGuilds>
-    'message-db/stats/guilds/chart': (locales: string[]) => Promise<MdbChart<MdbStatsGuilds>>
-    'message-db/stats/members': (args: MdbStatsMembersOption) => Promise<MdbStatsMembers>
-    'message-db/stats/members/chart': (locales: string[], args: MdbStatsMembersOption) => Promise<MdbChart<MdbStatsMembers>>
-    'message-db/stats/time': (args: MdbStatsTimeOption) => Promise<MdbStatsTime>
-    'message-db/stats/time/chart': (locales: string[], args: MdbStatsTimeOption) => Promise<MdbChart<MdbStatsTime>>
-  }
+  interface Events extends MdbEvents {}
 
   namespace Console {
     interface Services {
       messageDb: MdbProvider
     }
   }
+}
+
+export type MdbRemoteMethod =
+  | 'stats'
+  | 'statsGuilds' | 'statsGuildsChart'
+  | 'statsMembers' | 'statsMembersChart'
+  | 'statsTime' | 'statsTimeChart'
+
+export type MdbRemoteError =
+  | { error: 'internal' }
+  | { error: 'require-guild-member' }
+
+export type MdbEvents = {
+  [M in MdbRemoteMethod as `message-db/${M}`]:
+    MdbService[M] extends () => any
+      ? () => Promise<Awaited<ReturnType<MdbService[M]>> | MdbRemoteError>
+      : (param: Omit<Parameters<MdbService[M]>[0], 'i18n'>) => Promise<Awaited<ReturnType<MdbService[M]>> | MdbRemoteError>
 }
 
 export type MdbProvider = DataService<MdbProviderData>
@@ -122,7 +132,7 @@ export type MdbStatsTime = {
 }
 
 export type UniversalI18n = {
-  text: (key: string, args?: Record<string, any>) => string 
+  text: (key: string, param?: Record<string, any>) => string 
 }
 
 export interface MdbChart<T = any> {

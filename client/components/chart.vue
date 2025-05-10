@@ -1,19 +1,22 @@
 <script setup lang="ts">
-import VChart from 'vue-echarts'
-import { MdbChart } from '../src/types'
+import { stripUndefined } from '../../shared/utils'
+import { MdbChart, MdbRemoteError } from '../../src/types'
+
 import { computed } from 'vue'
+import VChart from 'vue-echarts'
 import { TitleOption } from 'echarts/types/dist/shared'
-import { stripUndefined } from '../shared/utils'
+
+import CatchError from './catch-error.vue'
 
 const props = defineProps<{
-  chart: MdbChart | undefined
+  chart: MdbChart | MdbRemoteError | undefined
   defaultTitle: string
   width: number
   height: number
 }>()
 
 const title = computed(() => {
-  if (! props.chart) return props.defaultTitle
+  if (! props.chart || 'error' in props.chart) return props.defaultTitle
   return (props.chart.option.title as TitleOption).text
 })
 
@@ -27,12 +30,18 @@ const sizeStyle = computed(() => ({
   <k-card :title="title" class="w-chart">
     <slot></slot>
     <div class="w-chart-inner" :style="sizeStyle">
-      <v-chart
-        :option="stripUndefined({
-          ...chart?.option,
-          title: undefined,
-        })"
-      />
+      <catch-error
+        v-if="chart"
+        :data="chart"
+        #="{ data: chart }"
+      >
+        <v-chart
+          :option="stripUndefined({
+            ...chart?.option,
+            title: undefined,
+          })"
+        />
+      </catch-error>
     </div>
   </k-card>
 </template>

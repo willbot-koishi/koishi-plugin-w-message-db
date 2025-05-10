@@ -1,7 +1,7 @@
 {
   "name": "koishi-plugin-w-message-db",
   "description": "WillBot: Message Database",
-  "version": "2.0.2",
+  "version": "2.0.3",
   "main": "lib/src/index.js",
   "typings": "lib/src/index.d.ts",
   "files": [
@@ -26,6 +26,7 @@
   },
   "devDependencies": {
     "@koishijs/client": "^5.30.7",
+    "@koishijs/plugin-auth": "^4.1.6",
     "@satorijs/protocol": "^1.6.0",
     "koishi-plugin-adapter-napcat": "workspace:^",
     "koishi-plugin-cron": "^3.1.0",

@@ -15,16 +15,16 @@ interface Divide {
   <T, U extends T>(arr: T[], pred: (it: T) => it is U): [ U[], Exclude<T, U>[] ]
   <T>(arr: T[], pred: (it: T) => boolean): [ T[], T[] ]
 }
-export const divide: Divide = <T, U extends T>(arr: T[], pred: (it: T) => it is U): [ U[], Exclude<T, U>[] ] => {
-  const trueArr: U[] = []
-  const falseArr: Exclude<T, U>[] = []
+export const divide = (<T>(arr: T[], pred: (it: T) => boolean): [ T[], T[] ] => {
+  const trueArr: T[] = []
+  const falseArr: T[] = []
   for (const it of arr)
     if (pred(it))
       trueArr.push(it)
     else
-      falseArr.push(it as Exclude<T, U>)
+      falseArr.push(it)
   return [ trueArr, falseArr ]
-}
+}) as Divide
 
 export const sumBy = <T>(arr: T[], getValue: (it: T) => number) =>
   arr.reduce((acc, it) => acc + getValue(it), 0)

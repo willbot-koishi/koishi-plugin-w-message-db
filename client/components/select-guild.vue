@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { store } from '@koishijs/client'
 
-import { getGid } from '../shared/utils'
-import { SavedGuild } from '../src/types'
+import { getGid } from '../../shared/utils'
+import { SavedGuild } from '../../src/types'
+
 import { computed } from 'vue'
 
 const guildModel = defineModel<SavedGuild>('guild')

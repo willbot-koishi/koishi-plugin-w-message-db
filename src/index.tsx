@@ -6,11 +6,13 @@ import {
   pick, z, h, $,
 } from 'koishi'
 import { DataService } from '@koishijs/plugin-console'
+import { Client } from '@koishijs/console'
 import type {} from 'koishi-plugin-cron'
 import type { StrictEChartsOption } from 'koishi-plugin-w-echarts'
 import type {} from 'koishi-plugin-w-option-conflict'
 import type { NapCatBot } from 'koishi-plugin-adapter-napcat'
 import type {} from '@koishijs/assets'
+import type {} from '@koishijs/plugin-auth'
 
 import dayjs from 'dayjs'
 import type { EChartsOption } from 'echarts'
@@ -28,7 +30,10 @@ import {
   MdbChart, MdbChartOption, UniversalI18n,
   GuildQuery, UserQuery,
   MdbProviderData,
+  MdbRemoteMethod,
+  MdbRemoteError,
 } from './types'
+import { error } from 'node:console'
 
 export class MdbService extends Service {
   static inject = {
@@ -44,7 +49,7 @@ export class MdbService extends Service {
 
     // I18n
     void [ 'zh-CN', 'en-US' ].map((locale: string) => {
-      this.ctx.i18n.define(locale, require(`./locales/${locale}.yml`))
+      this.ctx.i18n.define(locale, require(`../locales/${locale}.yml`))
     })
 
     // Define message table.
@@ -336,13 +341,14 @@ export class MdbService extends Service {
     this.ctx.on('send', this.saveMessage.bind(this))
 
     // Fetch message history of tracked guilds on start.
-    if (this.config.readonly) return
-    void this.fetchHistory({
-      duration: {
-        start: 0,
-        end: this.launchTime,
-      }
-    })
+    if (! this.config.readonly) {
+      void this.fetchHistory({
+        duration: {
+          start: 0,
+          end: this.launchTime,
+        }
+      })
+    }
 
     // Provide data to console.
     const that = this
@@ -361,21 +367,49 @@ export class MdbService extends Service {
     })
 
     // Handle console events.
-    type ChartMethod = 'statsGuildsChart' | 'statsMembersChart' | 'statsTimeChart'
-    const handleChart = <M extends ChartMethod>(method: M) => (locales: string[], param?: any) => this[method]({
-      i18n: this.createI18n(locales),
-      isStatic: false,
-      withData: false,
-      ...param,
-    }) as ReturnType<MdbService[M]>
+    const bind = <M extends MdbRemoteMethod>(method: M): this[M] =>
+      async function (...params: any[]): Promise<void | MdbRemoteError> {
+        try {
+          return that[method].call(that, ...params)
+        }
+        catch {
+          return { error: 'internal' }
+        }
+      } as unknown as this[M]
 
-    this.ctx.console.addListener('message-db/stats', this.stats.bind(this))
-    this.ctx.console.addListener('message-db/stats/guilds', this.statsGuilds.bind(this))
-    this.ctx.console.addListener('message-db/stats/guilds/chart', handleChart('statsGuildsChart'))
-    this.ctx.console.addListener('message-db/stats/members', this.statsMembers.bind(this))
-    this.ctx.console.addListener('message-db/stats/members/chart', handleChart('statsMembersChart'))
-    this.ctx.console.addListener('message-db/stats/time', this.statsTime.bind(this))
-    this.ctx.console.addListener('message-db/stats/time/chart', handleChart('statsTimeChart'))
+    const chart = <P extends MdbChartOption, R>(fn: (param: P) => R) =>
+      function (this: Client, param: Omit<P, 'i18n'>): R {
+        return fn.call(this, {
+          i18n: that.createI18n(Object.keys(this.ctx.i18n.locales)),
+          isStatic: false,
+          withData: false,
+          ...param,
+        } satisfies MdbChartOption)
+      }
+
+    const requireGuildMember = <P extends { guildQuery?: GuildQuery }, R>(fn: (param: P) => R) =>
+      async function (this: Client, param: P): Promise<Awaited<R> | MdbRemoteError> {
+        if (param.guildQuery) {
+          const { platform, guildId } = param.guildQuery
+          const [ binding ] = await that.ctx.database.get('binding', { aid: this.auth.id, platform })
+
+          if (! binding) return { error: 'require-guild-member' }
+          const bot = that.getManagerBotOf(param.guildQuery)
+          const isMember = await bot.getGuildMember(guildId, binding.pid)
+            .then(() => true).catch(() => false)
+          if (! isMember) return { error: 'require-guild-member' }
+        }
+
+        return fn.call(this, param)
+      }
+
+    this.ctx.console.addListener('message-db/stats', bind('stats'))
+    this.ctx.console.addListener('message-db/statsGuilds', bind('statsGuilds'))
+    this.ctx.console.addListener('message-db/statsGuildsChart', chart(bind('statsGuildsChart')))
+    this.ctx.console.addListener('message-db/statsMembers', requireGuildMember(bind('statsMembers')))
+    this.ctx.console.addListener('message-db/statsMembersChart', requireGuildMember(chart(bind('statsMembersChart'))))
+    this.ctx.console.addListener('message-db/statsTime', requireGuildMember(bind('statsTime')))
+    this.ctx.console.addListener('message-db/statsTimeChart', requireGuildMember(chart(bind('statsTimeChart'))))
   }
   
   private checkECharts() {
