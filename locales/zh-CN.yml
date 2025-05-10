@@ -6,7 +6,7 @@ message-db:
     guild-only: "请在群组中使用此命令。"
     guild-not-tracked: "此群组未被追踪。"
     guild-already-tracked: "此群组已被追踪。"
-    user-not-same-platform: "UID {0} 属于另一个平台。"
+    user-platform-mismatch: "UID {0} 属于另一个平台。"
     readonly: "消息数据库处于只读模式。"
     echarts-not-loaded: "ECharts 插件未加载。"
 
@@ -39,6 +39,7 @@ commands:
     options:
       force: "数据库处于只读模式时强制获取历史"
       maxCount: "获取消息的最大数量"
+      duration: "指定时段"
     messages:
       summary: "在 {duration} 秒内获取了 {guildCount} 个群组的历史。\n{okCount} 成功，{errorCount} 失败。\n共获取了 {messageCount} 条消息。"
 
@@ -75,6 +76,18 @@ commands:
 
   message-db.stats.members:
     description: "显示成员统计信息"
+    options:
+      duration: "指定时段"
+
+  message-db.stats.user:
+    description: "显示用户统计信息"
+    options:
+      global: "获取用户在所有群组中的统计信息"
+      guild: "指定群"
+      duration: "指定时段"
+    messages:
+      summary-global: "{userName} 在所有群中发送过 {count} 条消息。"
+      summary-guild: "{userName} 在 {guildName} 中发送过 {count} 条消息。"
 
   message-db.stats.time:
     description: "显示时段统计信息"

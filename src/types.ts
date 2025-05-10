@@ -76,6 +76,13 @@ export interface UserQuery {
   userId: string
 }
 
+export interface DurationQuery {
+  timestamp?: {
+    $gte?: number
+    $lte?: number
+  }
+}
+
 export interface FetchHistoryOptions {
   duration: Duration
   stopOnOld?: boolean
@@ -109,6 +116,7 @@ export type MdbStatsGuilds = Array<{
 
 export type MdbStatsMembersOption = {
   guildQuery: GuildQuery
+  durationQuery?: DurationQuery
 }
 
 export type MdbStatsMembers = Array<{

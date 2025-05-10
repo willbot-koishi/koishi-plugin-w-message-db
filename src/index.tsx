@@ -32,8 +32,8 @@ import {
   MdbProviderData,
   MdbRemoteMethod,
   MdbRemoteError,
+  DurationQuery,
 } from './types'
-import { error } from 'node:console'
 
 export class MdbService extends Service {
   static inject = {
@@ -100,18 +100,21 @@ export class MdbService extends Service {
 
         const { platform, guildId } = session
 
-        const durationQuery = this.queryDuration(parseDuration(options.duration))
+        const durationQuery = this.queryDuration(options.duration)
 
-        const userId = this.validateUid(options.user, platform)
+        const userQuery = this.queryUser(session, {
+          ...pick(options, [ 'user' ]),
+          validatePlatform: true,
+        })
 
         const query: Query<SavedMessage> = {
           platform,
           guildId,
-          userId: userId ?? {},
+          ...userQuery,
+          ...durationQuery,
           content: options.search
             ? { $regex: options.search }
             : {},
-          ...durationQuery,
         }
 
         const [ messages, messageTotal ] = await Promise.all([
@@ -157,15 +160,16 @@ export class MdbService extends Service {
         </message>
       })
 
-    ctx.command('message-db.fetch-history [duration:string]', { authority: 3 })
-      .option('force', '-f ')
+    ctx.command('message-db.fetch-history', { authority: 3 })
+      .option('duration', '-d <duration:string>')
+      .option('force', '-f')
       .option('maxCount', '-m <count:posint>')
-      .action(async ({ session, options }, duration) => {
+      .action(async ({ session, options }) => {
         if (! options.force) this.checkNotReadonly()
 
         const startTime = Date.now()
         const result = await this.fetchHistory({
-          duration: parseDuration(duration),
+          duration: parseDuration(options.duration),
           stopOnOld: false,
           maxCount: options.maxCount,
         })
@@ -239,18 +243,56 @@ export class MdbService extends Service {
       })
 
     ctx.command('message-db.stats.members')
-      .action(async ({ session }) => {
+      .option('duration', '-d <duration:string>')
+      .action(async ({ session, options }) => {
         this.checkECharts()
         this.checkInGuild(session)
 
         const eh = this.ctx.echarts.createChart(
           600, 600,
           await this
-            .statsMembersChart({ i18n: session, guildQuery: session })
+            .statsMembersChart({
+              i18n: session,
+              guildQuery: this.queryGuild(session),
+              durationQuery: this.queryDuration(options.duration),
+            })
             .then(it => it.option)
         )
 
         return eh.export()
+      })
+
+    ctx.command('message-db.stats.user')
+      .option('global', '-G')
+      .option('guild', '-g <guild:channel>', { conflictsWith: 'global' })
+      .option('duration', '-d <duration:string>')
+      .action(async ({ session, options }) => {
+        const userQuery = this.queryUser(session, {
+          useSender: true,
+          validatePlatform: true,
+        })
+        const guildQuery = this.queryGuild(session, options)
+        const durationQuery = this.queryDuration(options.duration)
+
+        const [ count, guildName ] = await Promise.all([
+          this.ctx.database
+            .select('w-message')
+            .where({
+              ...userQuery,
+              ...guildQuery,
+              ...durationQuery,
+            })
+            .execute(row => $.count(row.id)),
+          options.global
+            ? undefined
+            : session.bot.getGuild(session.guildId)
+              .then(it => it.name)
+        ])
+        const userName = session.username
+
+        return options.global
+          ? session.text('.summary-global', { count, userName })
+          : session.text('.summary-guild', { count, userName, guildName })
       })
 
     ctx.command('message-db.stats.time')
@@ -260,9 +302,10 @@ export class MdbService extends Service {
       .action(async ({ session, options }) => {
         this.checkECharts()
 
-        const userQuery: UserQuery = options.user
-          ? { userId: this.validateUid(options.user, session.platform) }
-          : undefined
+        const userQuery: UserQuery = this.queryUser(session, {
+          ...pick(options, [ 'user' ]),
+          validatePlatform: true,
+        })
         
         const guildQuery = this.queryGuild(session, options)
 
@@ -432,17 +475,22 @@ export class MdbService extends Service {
       throw new SessionError('message-db.error.readonly')
   }
 
-  private validateUid(uid: string | undefined, platform?: string) {
-    if (! uid) return undefined
-    const [ userPlatform, userId ] = uid.split(':')
-    if (platform && userPlatform !== platform)
-      throw new SessionError('message-db.error.user-not-same-platform', [ uid ])
-    return userId
+  private queryUser(
+    session: Session,
+    options: { user?: string, useSender?: boolean, validatePlatform?: boolean } = {}
+  ): UserQuery | undefined {
+    if (options.user) {
+      const [ platform, userId ] = options.user.split(':')
+      if (options.validatePlatform && platform !== session.platform)
+        throw new SessionError('message-db.error.user-platform-mismatch', [ options.useSender ])
+      return { userId }
+    }
+    if (options.useSender) return pick(session, [ 'userId' ])
   }
 
   private queryGuild(
     session: Session,
-    options: { global?: boolean, guild?: string }
+    options: { global?: boolean, guild?: string } = {},
   ): GuildQuery | undefined {
     if (options.global || ! session.guildId) return undefined
     if (! options.guild) return pick(session, [ 'platform', 'guildId' ])
@@ -450,7 +498,8 @@ export class MdbService extends Service {
     return { platform, guildId }
   }
 
-  private queryDuration({ start, end }: Duration) {
+  private queryDuration(durationStr = '~'): DurationQuery {
+    const { start, end } = parseDuration(durationStr)
     return {
       timestamp: stripUndefined({
         $gte: start ?? undefined,
@@ -609,15 +658,19 @@ export class MdbService extends Service {
     }
   }
 
-  async statsMembers({ guildQuery }: {
-    guildQuery: GuildQuery
-  }): Promise<MdbStatsMembers> {
+  async statsMembers({
+    guildQuery,
+    durationQuery
+  }: MdbStatsMembersOption): Promise<MdbStatsMembers> {
     this.checkSaved(guildQuery)
 
     const [ data, memberList ] = await Promise.all([
       this.ctx.database
         .select('w-message')
-        .where(guildQuery)
+        .where({
+          ...guildQuery,
+          ...durationQuery,
+        })
         .groupBy('userId', {
           count: row => $.count(row.id),
         })
@@ -645,13 +698,14 @@ export class MdbService extends Service {
 
   async statsMembersChart({
     guildQuery,
+    durationQuery,
     i18n,
     withData = false,
     isStatic = true,
   }: MdbChartOption & MdbStatsMembersOption): Promise<MdbChart<MdbStatsMembers>> {
     this.checkSaved(guildQuery)
 
-    const data = await this.statsMembers({ guildQuery })
+    const data = await this.statsMembers({ guildQuery, durationQuery })
     return {
       option: this.getPieChartOption({
         title: 'members',

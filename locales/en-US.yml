@@ -6,7 +6,7 @@ message-db:
     guild-only: "Please call this command in a guild."
     guild-not-tracked: "This guild is not tracked."
     guild-already-tracked: "This guild is already tracked."
-    user-not-same-platform: "UID {0} is on another platform."
+    user-platform-mismatch: "UID {0} is on another platform."
     readonly: "Message database is in readonly mode."
     echarts-not-loaded: "ECharts plugin is not loaded."
 
@@ -39,6 +39,7 @@ commands:
     options:
       force: "Fetch history even if database is readonly"
       maxCount: "Maximum number of messages to fetch"
+      duration: "Specify duration"
     messages:
       summary: "Fetched history of {guildCount} guilds in {duration}s.\n{okCount} succeeded while {errorCount} failed.\nFetched {messageCount} messages in total."
 
@@ -72,6 +73,18 @@ commands:
 
   message-db.stats.members:
     description: "Show members statistics"
+    options:
+      duration: "Specify duration"
+
+  message-db.stats.user:
+    description: "Show user statistics"
+    options:
+      global: "Get user statistics in all guilds"
+      guild: "Specify guild"
+      duration: "Specify duration"
+    messages:
+      summary-global: "{userName} has sended {count} messages in all guilds."
+      summary-guild: "{userName} has sended {count} messages in {guildName}."
 
   message-db.stats.time:
     description: "Show time statistics"
