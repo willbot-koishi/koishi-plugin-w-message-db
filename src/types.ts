@@ -1,38 +1,19 @@
+import type { DataService } from '@koishijs/plugin-console'
+
 import type { EChartsOption } from 'echarts'
 
 import { MdbService } from '.'
 import { Duration } from '../shared/utils'
-import { DataService } from '@koishijs/plugin-console'
 
 export type { MdbService }
-
-declare module 'koishi' {
-  interface Tables {
-    'w-message': SavedMessage
-    'w-message-guild': SavedGuild
-  }
-
-  interface Context {
-    messageDb: MdbService
-  }
-}
-
-
-declare module '@koishijs/plugin-console' {
-  interface Events extends MdbEvents {}
-
-  namespace Console {
-    interface Services {
-      messageDb: MdbProvider
-    }
-  }
-}
 
 export type MdbRemoteMethod =
   | 'stats'
   | 'statsGuilds' | 'statsGuildsChart'
   | 'statsMembers' | 'statsMembersChart'
   | 'statsTime' | 'statsTimeChart'
+  | 'getMessages'
+  | 'getGuildMembers'
 
 export type MdbRemoteError =
   | { error: 'internal' }
@@ -137,6 +118,18 @@ export type MdbStatsTime = {
     weekday: number
   }>
   guild: SavedGuild
+}
+
+export type GetMessageOption = {
+  guildQuery: GuildQuery
+  userQuery?: UserQuery
+  durationQuery?: DurationQuery
+  limit?: number
+  page?: number
+}
+
+export type GetGuildMembersOption = {
+  guildQuery: GuildQuery
 }
 
 export type UniversalI18n = {

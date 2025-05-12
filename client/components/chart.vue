@@ -11,25 +11,20 @@ import CatchError from './catch-error.vue'
 const props = defineProps<{
   chart: MdbChart | MdbRemoteError | undefined
   defaultTitle: string
-  width: number
-  height: number
+  width: string
+  height: string
 }>()
 
 const title = computed(() => {
   if (! props.chart || 'error' in props.chart) return props.defaultTitle
   return (props.chart.option.title as TitleOption).text
 })
-
-const sizeStyle = computed(() => ({
-  width: props.width + 'px',
-  height: props.height + 'px',
-}))
 </script>
 
 <template>
   <k-card :title="title" class="w-chart">
     <slot></slot>
-    <div class="w-chart-inner" :style="sizeStyle">
+    <div class="w-chart-inner" :style="{ width, height }">
       <catch-error
         v-if="chart"
         :data="chart"

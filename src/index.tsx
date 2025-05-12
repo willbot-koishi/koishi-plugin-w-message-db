@@ -5,22 +5,22 @@ import {
   Query, Tables, Driver,
   pick, z, h, $,
 } from 'koishi'
-import { DataService } from '@koishijs/plugin-console'
 import { Client } from '@koishijs/console'
+import type {} from '@koishijs/assets'
+import { DataService } from '@koishijs/plugin-console'
 import type {} from 'koishi-plugin-cron'
 import type { StrictEChartsOption } from 'koishi-plugin-w-echarts'
 import type {} from 'koishi-plugin-w-option-conflict'
 import type { NapCatBot } from 'koishi-plugin-adapter-napcat'
-import type {} from '@koishijs/assets'
 import type {} from '@koishijs/plugin-auth'
+import type { GuildMember } from '@satorijs/protocol'
 
 import dayjs from 'dayjs'
 import type { EChartsOption } from 'echarts'
 
 import {
   divide, formatSize, mapFrom, maxBy, stripUndefined, sumBy,
-  Duration, parseDuration,
-  getGid
+  parseDuration, getGid,
 } from '../shared/utils'
 import {
   FetchHistoryOptions, FetchHistoryResult, FetchHistoryGuildResult,
@@ -33,7 +33,32 @@ import {
   MdbRemoteMethod,
   MdbRemoteError,
   DurationQuery,
+  MdbEvents,
+  MdbProvider,
+  GetMessageOption,
+  GetGuildMembersOption,
 } from './types'
+
+declare module 'koishi' {
+  interface Tables {
+    'w-message': SavedMessage
+    'w-message-guild': SavedGuild
+  }
+
+  interface Context {
+    messageDb: MdbService
+  }
+}
+
+declare module '@koishijs/plugin-console' {
+  interface Events extends MdbEvents {}
+
+  namespace Console {
+    interface Services {
+      messageDb: MdbProvider
+    }
+  }
+}
 
 export class MdbService extends Service {
   static inject = {
@@ -434,7 +459,10 @@ export class MdbService extends Service {
       async function (this: Client, param: P): Promise<Awaited<R> | MdbRemoteError> {
         if (param.guildQuery) {
           const { platform, guildId } = param.guildQuery
-          const [ binding ] = await that.ctx.database.get('binding', { aid: this.auth.id, platform })
+          const [ binding ] = await that.ctx.database.get('binding', {
+            platform,
+            aid: this.auth.id,
+          })
 
           if (! binding) return { error: 'require-guild-member' }
           const bot = that.getManagerBotOf(param.guildQuery)
@@ -453,6 +481,8 @@ export class MdbService extends Service {
     this.ctx.console.addListener('message-db/statsMembersChart', requireGuildMember(chart(bind('statsMembersChart'))))
     this.ctx.console.addListener('message-db/statsTime', requireGuildMember(bind('statsTime')))
     this.ctx.console.addListener('message-db/statsTimeChart', requireGuildMember(chart(bind('statsTimeChart'))))
+    this.ctx.console.addListener('message-db/getMessages', requireGuildMember(bind('getMessages')))
+    this.ctx.console.addListener('message-db/getGuildMembers', requireGuildMember(bind('getGuildMembers')))
   }
   
   private checkECharts() {
@@ -529,7 +559,8 @@ export class MdbService extends Service {
     const [ majors, minors ] = divide(data, it => it.value > threshold)
     const other = {
       name: i18n.text('message-db.chart.other'),
-      value: sumBy(minors, it => it.value)
+      value: sumBy(minors, it => it.value),
+      itemStyle: { color: '#888' }
     }
     data = majors
     if (other.value > 0) data.push(other)
@@ -580,6 +611,33 @@ export class MdbService extends Service {
       text: (path: string, params?: Record<string, any>) =>
         this.ctx.i18n.render(locales, [ path ], params).map(String).join(''),
     }
+  }
+
+  async getMessages({
+    guildQuery,
+    userQuery,
+    durationQuery,
+    limit = this.config.pageSize,
+    page = 1,
+  }: GetMessageOption) {
+    const messages = this.ctx.database
+      .select('w-message')
+      .where({
+        ...guildQuery,
+        ...userQuery,
+        ...durationQuery,
+      })
+      .orderBy('timestamp', 'desc')
+      .limit(limit)
+      .offset(page * limit)
+      .execute()
+
+    return messages
+  }
+
+  async getGuildMembers({ guildQuery }: GetGuildMembersOption): Promise<GuildMember[]> {
+    const bot = this.getManagerBotOf(guildQuery)
+    return bot.getGuildMemberList(guildQuery.guildId).then(it => it.data)
   }
 
   async stats(): Promise<MdbStats> {
@@ -916,6 +974,7 @@ export class MdbService extends Service {
 
     // Start message content processing.
     let { content } = session
+    if (! content) return
     // Transfer assets.
     if (
       this.config.assetTransferring.enabled &&

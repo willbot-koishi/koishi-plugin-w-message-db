@@ -2,7 +2,8 @@
   "compilerOptions": {
     "rootDir": "..",
     "module": "esnext",
-    "moduleResolution": "node",
+    "moduleResolution": "node10",
+    "allowSyntheticDefaultImports": true,
     "types": [
       "@koishijs/client/global"
     ],
@@ -11,5 +12,5 @@
     ".",
     "../shared",
     "../src",
-  ]
+  ],
 }

@@ -1,46 +1,10 @@
 <script setup lang="ts">
-import { send } from '@koishijs/client'
+import { ref } from 'vue'
 
-import type { MdbStats, MdbChart, GuildQuery, MdbRemoteError } from '../src/types'
-import { formatSize } from '../shared/utils'
+import TabStats from './components/tabs/stats.vue'
+import TabMessages from './components/tabs/messages.vue'
 
-import { onMounted, reactive, Reactive, Ref, ref } from 'vue'
-
-import WChart from './components/chart.vue'
-import SelectGuild from './components/select-guild.vue'
-import CatchError from './components/catch-error.vue'
-
-const stats = ref<MdbStats | MdbRemoteError>(null)
-const statsGuildsChart: Ref<MdbChart | MdbRemoteError> = ref(null)
-const statsMemberCharts: Reactive<Record<string, MdbChart | MdbRemoteError>> = reactive({})
-const statsTimeCharts: Reactive<Record<string, MdbChart | MdbRemoteError>> = reactive({})
-
-const statsMemberChartGid: Ref<string> = ref(null)
-const statsTimeChartGid: Ref<string> = ref('global')
-
-onMounted(async () => {
-  stats.value = await send('message-db/stats')
-  statsGuildsChart.value = await send('message-db/statsGuildsChart', {})
-  statsTimeCharts.global = await send('message-db/statsTimeChart', {})
-})
-
-const loadStatsMembersChart = async () => {
-  if (! statsMemberChartGid.value) return
-  const [ platform, guildId ] = statsMemberChartGid.value.split(':')
-  const chart = await send('message-db/statsMembersChart', { guildQuery: { platform, guildId } })
-  statsMemberCharts[statsMemberChartGid.value] = chart
-}
-
-const loadStatsTimeChart = async () => {
-  const gid = statsTimeChartGid.value
-  let guildQuery: GuildQuery
-  if (gid !== 'global') {
-    const [ platform, guildId ] = gid.split(':')
-    guildQuery = { platform, guildId }
-  }
-  const chart = await send('message-db/statsTimeChart', { guildQuery })
-  statsTimeCharts[statsTimeChartGid.value] = chart
-}
+const tab = ref<'stats' | 'messages'>('stats')
 </script>
 
 <template>
@@ -48,71 +12,50 @@ const loadStatsTimeChart = async () => {
     <template #header>
       消息数据库
     </template>
-    <k-content #default>
-      <div class="cards">
-        <k-card title="概览">
-          <catch-error v-if="stats" :data="stats" #="{ data: stats }">
-            总消息数：{{ stats.messageCount }}<br />
-            总群组数：{{ stats.guildCount }}<br />
-            追踪的群组数：{{ stats.trackedGuildCount }}<br />
-            数据库大小：{{ formatSize(stats.tableSize) }}<br />
-          </catch-error>
-        </k-card>
 
-        <w-chart
-          default-title="时段消息数量"
-          :chart="statsTimeCharts[statsTimeChartGid]"
-          :width="(24 * 30 + 100) * .8"
-          :height="(7 * 30 + 120) * .8"
-        >
-          <div class="group">
-            <select-guild v-model="statsTimeChartGid" :with-global="true" />
-            <k-button @click="loadStatsTimeChart">加载</k-button>
-          </div>
-        </w-chart>
+    <template #left>
+      <k-tab-group
+        v-model="tab"
+        :data="{
+          stats: { name: '统计数据' },
+          messages: { name: '消息' },
+        }"
+        #="{ name }"
+      >
+        {{ name }}
+      </k-tab-group>
+    </template>
 
-        <w-chart
-          default-title="群组消息数量"
-          :chart="statsGuildsChart"
-          :width="600"
-          :height="450"
-        />
-
-        <w-chart
-          default-title="成员消息数量"
-          :chart="statsMemberCharts[statsMemberChartGid]"
-          :width="600"
-          :height="450"
-        >
-          <div class="group">
-            <select-guild v-model="statsMemberChartGid" />
-            <k-button @click="loadStatsMembersChart">加载</k-button>
-          </div>
-        </w-chart>
-      </div>
-    </k-content>
+    <template #default>
+      <keep-alive>
+        <tab-stats v-if="tab === 'stats'" />
+        <tab-messages v-else-if="tab === 'messages'" />
+      </keep-alive>
+    </template>
   </k-layout>
 </template>
 
 <style scoped>
-.cards {
-  display: grid;
-  margin: 2rem;
-  gap: 2rem;
-  grid-template-columns: repeat(auto-fit, minmax(640px, 1fr));
-}
-
-.group {
-  display: flex;
-  gap: 1rem;
-}
-
 .page :deep(.k-content) {
   max-width: unset;
   width: 100%;
+  padding: 0;
 }
 
 .page :deep(.k-button) {
   white-space: nowrap;
+}
+
+.page :deep(.layout-left) {
+  --aside-width: 8rem;
+}
+
+.page :deep(.k-tab-item) {
+  padding: 0 .5rem 0 1rem;
+}
+
+.page :deep(.group) {
+  display: flex;
+  gap: 1rem;
 }
 </style>
