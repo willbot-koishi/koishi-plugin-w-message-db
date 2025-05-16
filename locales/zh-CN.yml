@@ -70,6 +70,8 @@ commands:
 
   message-db.stats.guilds:
     description: "显示群组统计信息"
+    options:
+      duration: "指定时段"
     messages:
       summary: "当前群组共有 {count} 条消息，排行第 {rank}。"
       untracked: "当前群组未被追踪。"
@@ -95,6 +97,7 @@ commands:
       global: "获取所有群组的统计信息"
       guild: "指定群组"
       user: "指定用户"
+      duration: "指定时段"
 
   message-db.guild.list:
     description: "列出保存的群组"

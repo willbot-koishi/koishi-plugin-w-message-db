@@ -26,6 +26,12 @@ export const divide = (<T>(arr: T[], pred: (it: T) => boolean): [ T[], T[] ] => 
   return [ trueArr, falseArr ]
 }) as Divide
 
+export const foldl1 = <T>(arr: T[], fn: (acc: T, it: T) => T): T => {
+  if (arr.length === 0)
+    throw new RangeError('foldl1: empty array')
+  return arr.reduce((acc, it) => fn(acc, it))
+}
+
 export const sumBy = <T>(arr: T[], getValue: (it: T) => number) =>
   arr.reduce((acc, it) => acc + getValue(it), 0)
 
@@ -33,6 +39,11 @@ export const maxBy = <T>(arr: T[], getValue: (it: T) => number) =>
   Math.max(...arr.map(getValue))
 export const minBy = <T>(arr: T[], getValue: (it: T) => number) =>
   Math.min(...arr.map(getValue))
+export const findMaxBy = <T>(arr: T[], getValue: (it: T) => number): T =>
+  arr.reduce((acc, it) => getValue(it) > getValue(acc) ? it : acc)
+export const findMinBy = <T>(arr: T[], getValue: (it: T) => number): T =>
+  arr.reduce((acc, it) => getValue(it) < getValue(acc) ? it : acc)
+export const sortPair = (a: number, b: number) => a < b ? [ a, b ] : [ b, a ]
 
 export const formatSize = (size: number) => {
   const units = [ 'B', 'KB', 'MB', 'GB' ]
@@ -84,3 +95,6 @@ export const parseDuration = (durationStr: string = ''): Duration => {
 
 export const getGid = ({ platform, guildId }: GuildQuery) =>
   `${platform}:${guildId}`
+
+export const applyA = <P extends [], T>(fnArr: ((...params: P) => T)[]) =>
+  (...params: P): T[] => fnArr.map(fn => fn(...params))

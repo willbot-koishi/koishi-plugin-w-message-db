@@ -4,40 +4,49 @@ import { h } from '@satorijs/core'
 import { SavedMessage } from '../../src/types'
 import { getGid } from '../../shared/utils'
 
-import { computed, inject } from 'vue'
-
-import { kGuildMembers } from './tabs/messages.vue'
+import { computed, ref } from 'vue'
+import { useMessageStore } from '../stores/message'
 
 const props = defineProps<{
   message: SavedMessage
+  showTime?: boolean
 }>()
 
-const guildMembers = inject(kGuildMembers)
-const members = computed(() => guildMembers?.[getGid(props.message)])
+const { guildMembers } = useMessageStore()
+const members = computed(() => guildMembers?.[getGid(props.message)] ?? {})
 
 const elements = computed(() => h.parse(props.message.content))
+const lastIndex = computed(() => elements.value.length - 1)
 
 const getUserName = (userId: string) => {
   const member = members.value?.[userId]
   return member?.nick || member?.user.name || userId
 }
 
-const lastIndex = computed(() => elements.value.length - 1)
+const RESOURCE_ELEMENT_TYPES = [ 'image', 'img', 'video', 'audio' ]
+
+const isActive = ref(false)
 </script>
 
 <template>
-  <div class="message">
+  <div
+    class="message"
+    :class="{ active: isActive }"
+  >
     <div class="message-avatar">
       <img :src="members[message.userId]?.user.avatar" />
     </div>
     <div class="message-right">
       <div class="message-author">
         {{ message.username }}
+        <span v-if="showTime" class="message-time">
+          {{ new Date(message.timestamp).toLocaleString() }}
+        </span>
       </div>
       <div
         class="message-content"
         :class="{
-          'img-only': elements.length === 1 && (elements[0].type === 'image' || elements[0].type === 'img'),
+          'resource-only': elements.length === 1 && RESOURCE_ELEMENT_TYPES.includes(elements[0].type),
         }"
       >
         <template v-for="element, index of elements">
@@ -46,15 +55,15 @@ const lastIndex = computed(() => elements.value.length - 1)
             <br v-if="index < lastIndex" />
           </template>
           <template v-else-if="element.type === 'image' || element.type === 'img'">
-            <img :src="element.attrs.src" />
+            <img class="message-resource" :src="element.attrs.src" />
             <br v-if="index < lastIndex" />
           </template>
           <template v-else-if="element.type === 'video'">
-            <video :src="element.attrs.src" />
+            <video class="message-resource" :src="element.attrs.src" controls />
             <br v-if="index < lastIndex" />
           </template>
           <template v-else-if="element.type === 'audio'">
-            <audio :src="element.attrs.src" />
+            <audio class="message-resource" :src="element.attrs.src" />
             <br v-if="index < lastIndex" />
           </template>
           <template v-else-if="element.type === 'at'">
@@ -73,7 +82,6 @@ const lastIndex = computed(() => elements.value.length - 1)
 .message {
   display: flex;
   gap: .5rem;
-  padding: 1rem;
   max-width: calc(100% - 1rem);
 }
 
@@ -84,14 +92,19 @@ const lastIndex = computed(() => elements.value.length - 1)
 }
 
 .message-content {
-  padding: .5rem;
+  padding: .3rem .5rem .4rem .5rem;
   background-color: var(--k-side-bg);
   border-radius: 0.5rem;
 }
 
-.message-content img {
+.message-resource {
   max-width: 10rem;
   max-height: 16.18rem;
+}
+
+.message.active .message-resource {
+  max-width: 100%;
+  max-height: 100%;
 }
 
 .message-content pre {
@@ -101,7 +114,7 @@ const lastIndex = computed(() => elements.value.length - 1)
   white-space: break-spaces;
 }
 
-.message-content.img-only {
+.message-content.resource-only {
   line-height: 0;
   padding: 0;
   overflow: hidden;
@@ -122,5 +135,10 @@ const lastIndex = computed(() => elements.value.length - 1)
 .message-author {
   font-size: .8rem;
   padding-left: .1rem;
+}
+
+.message-time {
+  color: var(--fg2);
+  margin-left: .2rem;
 }
 </style>

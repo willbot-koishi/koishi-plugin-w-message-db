@@ -27,10 +27,10 @@ const tab = ref<'stats' | 'messages'>('stats')
     </template>
 
     <template #default>
-      <keep-alive>
+      <KeepAlive>
         <tab-stats v-if="tab === 'stats'" />
         <tab-messages v-else-if="tab === 'messages'" />
-      </keep-alive>
+      </KeepAlive>
     </template>
   </k-layout>
 </template>
@@ -42,7 +42,7 @@ const tab = ref<'stats' | 'messages'>('stats')
   padding: 0;
 }
 
-.page :deep(.k-button) {
+.page :deep(.el-button) {
   white-space: nowrap;
 }
 
@@ -56,6 +56,19 @@ const tab = ref<'stats' | 'messages'>('stats')
 
 .page :deep(.group) {
   display: flex;
+  align-items: center;
   gap: 1rem;
+}
+.page :deep(.group *) {
+  margin: 0;
+}
+
+.page :deep(.el-button) {
+  --el-button-font-weight: normal;
+}
+
+.page :deep(.el-checkbox.is-bordered) {
+  height: 32px;
+  padding: 0 9px;
 }
 </style>

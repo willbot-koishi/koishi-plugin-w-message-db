@@ -89,6 +89,10 @@ export interface MdbStats {
   tableSize: number
 }
 
+export type MdbStatsGuildsOption = {
+  durationQuery?: DurationQuery
+}
+
 export type MdbStatsGuilds = Array<{
   gid: string
   name: string
@@ -109,6 +113,7 @@ export type MdbStatsMembers = Array<{
 export type MdbStatsTimeOption = {
   guildQuery?: GuildQuery
   userQuery?: UserQuery
+  durationQuery?: DurationQuery
 }
 
 export type MdbStatsTime = {
@@ -123,7 +128,8 @@ export type MdbStatsTime = {
 export type GetMessageOption = {
   guildQuery: GuildQuery
   userQuery?: UserQuery
-  durationQuery?: DurationQuery
+  baseTimestamp?: number
+  direction?: 'before' | 'after'
   limit?: number
   page?: number
 }

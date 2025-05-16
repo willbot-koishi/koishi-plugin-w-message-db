@@ -69,7 +69,7 @@ const loadStatsTimeChart = async () => {
     >
       <div class="group">
         <select-guild v-model="statsTimeChartGid" :with-global="true" />
-        <k-button @click="loadStatsTimeChart">加载</k-button>
+        <el-button @click="loadStatsTimeChart">加载</el-button>
       </div>
     </w-chart>
 
@@ -88,7 +88,7 @@ const loadStatsTimeChart = async () => {
     >
       <div class="group">
         <select-guild v-model="statsMemberChartGid" />
-        <k-button @click="loadStatsMembersChart">加载</k-button>
+        <el-button @click="loadStatsMembersChart">加载</el-button>
       </div>
     </w-chart>
   </div>

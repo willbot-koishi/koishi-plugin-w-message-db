@@ -1,9 +1,10 @@
 import { resolve } from 'node:path'
+import { Readable } from 'node:stream'
 
 import {
   Context, SessionError, Service, Session, Bot,
   Query, Tables, Driver,
-  pick, z, h, $,
+  pick, z, h, $, HTTP,
 } from 'koishi'
 import { Client } from '@koishijs/console'
 import type {} from '@koishijs/assets'
@@ -13,6 +14,7 @@ import type { StrictEChartsOption } from 'koishi-plugin-w-echarts'
 import type {} from 'koishi-plugin-w-option-conflict'
 import type { NapCatBot } from 'koishi-plugin-adapter-napcat'
 import type {} from '@koishijs/plugin-auth'
+import type {} from '@koishijs/plugin-server'
 import type { GuildMember } from '@satorijs/protocol'
 
 import dayjs from 'dayjs'
@@ -37,6 +39,7 @@ import {
   MdbProvider,
   GetMessageOption,
   GetGuildMembersOption,
+  MdbStatsGuildsOption,
 } from './types'
 
 declare module 'koishi' {
@@ -63,7 +66,7 @@ declare module '@koishijs/plugin-console' {
 export class MdbService extends Service {
   static inject = {
     required: [ 'database', 'cron', 'console' ],
-    optional: [ 'echarts', 'assets' ],
+    optional: [ 'echarts', 'assets', 'server' ],
   }
 
   logger = this.ctx.logger('w-message-db')
@@ -104,6 +107,38 @@ export class MdbService extends Service {
       dev: resolve(__dirname, '../client/index.ts'),
       prod: resolve(__dirname, '../../dist'),
     })
+
+    // Set up html2canvas proxy.
+    if (config.console.proxyMode === 'internal' && ctx.server) {
+      const RESPONSE_TYPES = [ 'blob', 'text' ]
+      ctx.server.get(new URL(config.console.proxyUrl).pathname, async (ktx) => {
+        const { url, responseType } = ktx.query
+        if (typeof url !== 'string' || ! url) {
+          ktx.status = 400
+          ktx.body = 'Missing `url`.'
+          return
+        }
+        if (responseType !== undefined && (
+          typeof responseType !== 'string' ||
+          ! RESPONSE_TYPES.includes(responseType)
+        )) {
+          ktx.status = 400
+          ktx.body = 'Invalid `responseType`.'
+          return
+        }
+        const resp = await ctx.http(url, {
+          method: ktx.method as HTTP.Method,
+          headers: ktx.headers,
+          data: ktx.body,
+          responseType: 'stream',
+        })
+        ktx.status = resp.status
+        resp.headers.forEach((value, key) => {
+          ktx.set(key, value)
+        })
+        ktx.body = Readable.fromWeb(resp.data)
+      })
+    }
 
     // Garbage collection.
     if (config.gc.enabled) ctx.cron(config.gc.cron, () => this.gc())
@@ -239,10 +274,12 @@ export class MdbService extends Service {
       })
 
     ctx.command('message-db.stats.guilds')
-      .action(async ({ session }) => {
+      .option('duration', '-d <duration:string>')
+      .action(async ({ session, options }) => {
         this.checkECharts()
 
-        const guildStats = await this.statsGuilds()
+        const durationQuery = this.queryDuration(options.duration)
+        const guildStats = await this.statsGuilds({ durationQuery })
 
         const eh = this.ctx.echarts.createChart(
           600, 600,
@@ -324,20 +361,22 @@ export class MdbService extends Service {
       .option('global', '-G')
       .option('guild', '-g <guild:channel>', { conflictsWith: 'global' })
       .option('user', '-u <user:user>')
+      .option('duration', '-d <duration:string>')
       .action(async ({ session, options }) => {
         this.checkECharts()
 
+        const guildQuery = this.queryGuild(session, options)
         const userQuery: UserQuery = this.queryUser(session, {
           ...pick(options, [ 'user' ]),
           validatePlatform: true,
         })
-        
-        const guildQuery = this.queryGuild(session, options)
+        const durationQuery = this.queryDuration(options.duration)
 
         const { option } = await this.statsTimeChart({
           i18n: session,
           guildQuery,
-          userQuery
+          userQuery,
+          durationQuery,
         })
 
         const eh = this.ctx.echarts.createChart(24 * 30 + 100, 7 * 30 + 120, option)
@@ -474,6 +513,7 @@ export class MdbService extends Service {
         return fn.call(this, param)
       }
 
+    // TODO: Validate params.
     this.ctx.console.addListener('message-db/stats', bind('stats'))
     this.ctx.console.addListener('message-db/statsGuilds', bind('statsGuilds'))
     this.ctx.console.addListener('message-db/statsGuildsChart', chart(bind('statsGuildsChart')))
@@ -616,18 +656,24 @@ export class MdbService extends Service {
   async getMessages({
     guildQuery,
     userQuery,
-    durationQuery,
+    baseTimestamp,
+    direction = 'before',
     limit = this.config.pageSize,
     page = 1,
   }: GetMessageOption) {
+    const durationQuery: DurationQuery = { timestamp: {} }
+    if (baseTimestamp) {
+      if (direction === 'before') durationQuery.timestamp.$lte = baseTimestamp
+      else durationQuery.timestamp.$gte = baseTimestamp
+    }
     const messages = this.ctx.database
       .select('w-message')
       .where({
+        ...durationQuery,
         ...guildQuery,
         ...userQuery,
-        ...durationQuery,
       })
-      .orderBy('timestamp', 'desc')
+      .orderBy('timestamp', direction === 'before' ? 'desc' : 'asc')
       .limit(limit)
       .offset(page * limit)
       .execute()
@@ -660,10 +706,15 @@ export class MdbService extends Service {
     }
   }
 
-  async statsGuilds(): Promise<MdbStatsGuilds> {
+  async statsGuilds({
+    durationQuery,
+  }: MdbStatsGuildsOption): Promise<MdbStatsGuilds> {
     const [ data, guildLists ] = await Promise.all([
       this.ctx.database
         .select('w-message')
+        .where({
+          ...durationQuery,
+        })
         .groupBy([ 'platform', 'guildId' ], {
           count: row => $.count(row.id),
         })
@@ -700,11 +751,12 @@ export class MdbService extends Service {
   }
 
   async statsGuildsChart({
+    durationQuery,
     i18n,
     withData = false,
     isStatic = true,
-  }: MdbChartOption): Promise<MdbChart<MdbStatsGuilds>> {
-    const data = await this.statsGuilds()
+  }: MdbStatsGuildsOption & MdbChartOption): Promise<MdbChart<MdbStatsGuilds>> {
+    const data = await this.statsGuilds({ durationQuery })
     return {
       option: this.getPieChartOption({
         title: 'guilds',
@@ -775,7 +827,7 @@ export class MdbService extends Service {
     }
   }
 
-  async statsTime({ guildQuery, userQuery }: MdbStatsTimeOption) {
+  async statsTime({ guildQuery, userQuery, durationQuery }: MdbStatsTimeOption) {
     const timezoneOffset = (this.ctx.root.config.timezoneOffset as number) * 60 * 1000
 
     const [ timeData, guild ] = await Promise.all([
@@ -784,6 +836,7 @@ export class MdbService extends Service {
         .where({
           ...guildQuery,
           ...userQuery,
+          ...durationQuery,
         })
         .project({
           id: row => row.id,
@@ -1119,6 +1172,11 @@ export namespace MdbService {
     pageSize: number
   }
 
+  interface ConsoleConfig {
+    proxyMode: 'disable' | 'external' | 'internal'
+    proxyUrl: string
+  }
+
   export interface Config {
     readonly: boolean
     requireTracking: boolean
@@ -1126,6 +1184,7 @@ export namespace MdbService {
     historyFetching: HistoryFetchingConfig
     assetTransferring: AssetTransferringConfig
     gc: GcConfig
+    console: ConsoleConfig
   }
 
   export const Config: z<Config> = z.object({
@@ -1185,6 +1244,18 @@ export namespace MdbService {
           .description('Whether to only delete untracked messages.'),
       })
       .description('Garbage collection'),
+    console: z
+      .object({
+        proxyMode: z
+          .union([ 'disable', 'external', 'internal' ])
+          .default('disable')
+          .description('Proxy mode for console.'),
+        proxyUrl: z
+          .string()
+          .default('')
+          .description('Proxy URL for console.'),
+      })
+      .description('Console')
   })
 }
 
