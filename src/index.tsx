@@ -88,7 +88,7 @@ export class MdbService extends Service {
       userId: 'string',
       username: 'string',
       content: 'text',
-      timestamp: 'unsigned',
+      timestamp: 'unsigned(8)',
     }, {
       primary: 'id',
     })
