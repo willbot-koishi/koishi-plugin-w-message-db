@@ -283,20 +283,22 @@ export class MdbService extends Service {
         this.checkECharts()
 
         const durationQuery = this.queryDuration(options.duration)
-        const guildStats = await this.statsGuilds({ durationQuery })
 
-        const eh = this.ctx.echarts.createChart(
-          600, 600,
-          await this.statsGuildsChart({ i18n: session }).then(it => it.option)
-        )
+        const { data: statsGuilds, option } = await this.statsGuildsChart({
+          i18n: session,
+          withData: true,
+          durationQuery,
+        })
+
+        const eh = this.ctx.echarts.createChart(600, 600, option)
 
         let rankMessage = ''
         if (session.guildId) {
-          const index = guildStats.findIndex(
+          const index = statsGuilds.findIndex(
             it => it.gid === `${session.platform}:${session.guildId}`
           )
           const rank = index + 1
-          const count = guildStats[index].value
+          const count = statsGuilds[index].value
           rankMessage = rank
             ? session.text('.summary', { count, rank })
             : session.text('.untracked')

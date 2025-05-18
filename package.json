@@ -1,7 +1,7 @@
 {
   "name": "koishi-plugin-w-message-db",
   "description": "WillBot: Message Database",
-  "version": "2.4.0",
+  "version": "2.4.1",
   "main": "lib/src/index.js",
   "typings": "lib/src/index.d.ts",
   "files": [
