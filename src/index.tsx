@@ -51,6 +51,10 @@ declare module 'koishi' {
   interface Context {
     messageDb: MdbService
   }
+
+  interface Events {
+    'message-db/message': (message: SavedMessage) => void
+  }
 }
 
 declare module '@koishijs/plugin-console' {
@@ -444,8 +448,9 @@ export class MdbService extends Service {
       .then(guilds => mapFrom(guilds, getGid))
 
     // Start saving messages.
-    this.ctx.on('message', this.saveMessage.bind(this))
-    this.ctx.on('send', this.saveMessage.bind(this))
+    const saveMessage = this.saveMessage.bind(this)
+    this.ctx.on('message', saveMessage)
+    this.ctx.on('send', saveMessage)
 
     // Fetch message history of tracked guilds on start.
     if (! this.config.readonly) {
@@ -1046,7 +1051,12 @@ export class MdbService extends Service {
       content,
       timestamp
     }
-    await this.ctx.database.upsert('w-message', [ message ])
+
+    const { inserted } = await this.ctx.database.upsert('w-message', [ message ])
+
+    // Emit message event.
+    // TODO: Multi-instance broadcast.
+    if (inserted) this.ctx.emit('message-db/message', message)
 
     return
   }
