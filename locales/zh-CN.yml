@@ -8,7 +8,10 @@ message-db:
     guild-already-tracked: "此群组已被追踪。"
     user-platform-mismatch: "UID {0} 属于另一个平台。"
     readonly: "消息数据库处于只读模式。"
-    echarts-not-loaded: "ECharts 插件未加载。"
+    echarts-not-loaded: "ECharts 服务未加载。"
+    jieba-not-loaded: "Jieba 服务未加载。"
+    wordcloud-not-loaded: "词云服务未加载。"
+    wordcloud-top-out-of-range: "词云显示词数量必须在 1 到 200 之间。"
 
   chart:
     other: "其他"
@@ -84,7 +87,7 @@ commands:
   message-db.stats.user:
     description: "显示用户统计信息"
     options:
-      global: "获取用户在所有群组中的统计信息"
+      global: "对所有群运行"
       guild: "指定群"
       duration: "指定时段"
     messages:
@@ -94,10 +97,20 @@ commands:
   message-db.stats.time:
     description: "显示时段统计信息"
     options:
-      global: "获取所有群组的统计信息"
+      global: "对所有群运行"
       guild: "指定群组"
       user: "指定用户"
       duration: "指定时段"
+
+  message-db.stats.wordcloud:
+    description: "查看词云"
+    options:
+      global: "对所有群运行"
+      guild: "指定群组"
+      user: "指定用户"
+      top: "显示词语数量"
+    messages:
+      summary: "所选消息中，排名前 {wordTopCount} 的词语是："
 
   message-db.guild.list:
     description: "列出保存的群组"
@@ -111,3 +124,31 @@ commands:
     description: "追踪当前群组"
     messages:
       guild-tracked: "已追踪当前群组。"
+
+  message-db.segment:
+    description: "管理消息分词"
+
+  message-db.segment.run:
+    description: "运行消息分词"
+    options:
+      guild: "指定群组"
+      duration: "指定时段"
+    messages:
+      start: "开始分词……"
+      summary: "已分词 {messageCount} 条消息。"
+
+  message-db.task:
+    description: "管理消息数据库任务"
+
+  message-db.task.list:
+    description: "列出正在运行的任务"
+    messages:
+      summary: "共有 {count} 个正在运行的任务："
+      task-info: "#{id}: {description} @ {startAt}"
+      no-tasks: "没有正在运行的任务。"
+
+  message-db.task.abort:
+    description: "中止任务"
+    messages:
+      aborted: "已中止任务 #{id}。"
+      not-found: "任务 #{id} 不存在。"

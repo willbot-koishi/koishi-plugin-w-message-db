@@ -8,7 +8,10 @@ message-db:
     guild-already-tracked: "This guild is already tracked."
     user-platform-mismatch: "UID {0} is on another platform."
     readonly: "Message database is in readonly mode."
-    echarts-not-loaded: "ECharts plugin is not loaded."
+    echarts-not-loaded: "ECharts service is not loaded."
+    jieba-not-loaded: "Jieba service is not loaded."
+    wordcloud-not-loaded: "Wordcloud service is not loaded."
+    wordcloud-top-out-of-range: "Wordcloud top word count must be between 1 and 200."
 
   chart:
     other: "Other"
@@ -81,7 +84,7 @@ commands:
   message-db.stats.user:
     description: "Show user statistics"
     options:
-      global: "Get user statistics in all guilds"
+      global: "Run on all guilds"
       guild: "Specify guild"
       duration: "Specify duration"
     messages:
@@ -91,10 +94,21 @@ commands:
   message-db.stats.time:
     description: "Show time statistics"
     options:
-      global: "Get statistics of all guilds"
+      global: "Run on all guilds"
       guild: "Specify guild"
       user: "Specify user"
       duration: "Specify duration"
+
+  message-db.stats.wordcloud:
+    description: "View word cloud"
+    options:
+      global: "Run on all guilds"
+      guild: "Specify guild"
+      user: "Specify user"
+      duration: "Specify duration"
+      top: "Number of top words to display"
+    messages:
+      summary: "The top {wordTopCount} words of the selected messages are:"
 
   message-db.guild:
     description: "Manage guilds"
@@ -111,3 +125,31 @@ commands:
     description: "Track current guild"
     messages:
       guild-tracked: "Tracked current guild."
+
+  message-db.segment:
+    description: "Manage message segmentation"
+
+  message-db.segment.run:
+    description: "Run message segmentation"
+    options:
+      guild: "Specify guild"
+      duration: "Specify duration"
+    messages:
+      start: "Starting segmentation..."
+      summary: "Segmented {messageCount} messages."
+
+  message-db.task:
+    description: "Manage message database tasks"
+
+  message-db.task.list:
+    description: "List running tasks"
+    messages:
+      summary: "{count} running tasks:"
+      task-info: "#{id} {description} @ {startAt}"
+      no-tasks: "No running tasks."
+
+  message-db.task.abort:
+    description: "Abort a running task"
+    messages:
+      aborted: "Aborted task #{id}."
+      not-found: "Task #{id} not found."

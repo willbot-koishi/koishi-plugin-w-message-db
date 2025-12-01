@@ -1,6 +1,7 @@
 import type { DataService } from '@koishijs/plugin-console'
 
 import type { EChartsOption } from 'echarts'
+import type { Tag, Tag as TaggedWord } from 'koishi-plugin-w-jieba'
 
 import { MdbService } from '.'
 import { Duration } from '../shared/utils'
@@ -38,23 +39,33 @@ export interface SavedGuild {
 
 export type TrackedGuild = SavedGuild & { isTracked: true }
 
-export interface SavedMessage {
-  id: string
+export interface SavedMessageHeader {
   platform: string
   guildId: string
   userId: string
+  timestamp: number
+}
+
+export interface SavedMessage extends SavedMessageHeader {
+  id: string
   username: string
   content: string
-  timestamp: number
+  quote: string
+  segmented: boolean
+}
+
+export interface SavedMessageWord extends TaggedWord, SavedMessageHeader {
+  messageId: string
+  index: number
 }
 
 export interface GuildQuery {
   platform: string
-  guildId: string
+  guildId?: string
 }
 
 export interface UserQuery {
-  userId: string
+  userId?: string
 }
 
 export interface DurationQuery {
@@ -139,7 +150,7 @@ export type GetGuildMembersOption = {
 }
 
 export type UniversalI18n = {
-  text: (key: string, param?: Record<string, any>) => string 
+  text: (key: string, param?: Record<string, any>) => string
 }
 
 export interface MdbChart<T = any> {

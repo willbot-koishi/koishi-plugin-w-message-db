@@ -5,12 +5,15 @@ import {
   Context, SessionError, Service, Session, Bot,
   Query, Tables, Driver,
   pick, z, h, $, HTTP,
+  Awaitable,
 } from 'koishi'
 import { Client } from '@koishijs/console'
 import type {} from '@koishijs/assets'
 import { DataService } from '@koishijs/plugin-console'
 import type {} from 'koishi-plugin-cron'
 import type { StrictEChartsOption } from 'koishi-plugin-w-echarts'
+import type {} from 'koishi-plugin-w-jieba'
+import type {} from 'koishi-plugin-w-wordcloud'
 import type {} from 'koishi-plugin-w-option-conflict'
 import type { NapCatBot } from 'koishi-plugin-adapter-napcat'
 import type {} from '@koishijs/plugin-auth'
@@ -40,11 +43,13 @@ import {
   GetMessageOption,
   GetGuildMembersOption,
   MdbStatsGuildsOption,
+  SavedMessageWord,
 } from './types'
 
 declare module 'koishi' {
   interface Tables {
     'w-message': SavedMessage
+    'w-message-word': SavedMessageWord
     'w-message-guild': SavedGuild
   }
 
@@ -57,9 +62,11 @@ declare module 'koishi' {
   }
 }
 
-declare module '@koishijs/plugin-console' {
+declare module '@koishijs/console' {
   interface Events extends MdbEvents {}
+}
 
+declare module '@koishijs/plugin-console' {
   namespace Console {
     interface Services {
       messageDb: MdbProvider
@@ -69,8 +76,8 @@ declare module '@koishijs/plugin-console' {
 
 export class MdbService extends Service {
   static inject = {
-    required: [ 'database', 'cron', 'console' ],
-    optional: [ 'echarts', 'assets', 'server' ],
+    required: ['database', 'cron', 'console'],
+    optional: ['echarts', 'assets', 'server', 'jieba', 'wordcloud'],
   }
 
   logger = this.ctx.logger('w-message-db')
@@ -80,7 +87,7 @@ export class MdbService extends Service {
     this.launchTime = Date.now()
 
     // I18n
-    void [ 'zh-CN', 'en-US' ].map((locale: string) => {
+    void ['zh-CN', 'en-US'].map((locale: string) => {
       this.ctx.i18n.define(locale, require(`../locales/${locale}.yml`))
     })
 
@@ -93,9 +100,28 @@ export class MdbService extends Service {
       username: 'string',
       content: 'text',
       timestamp: 'unsigned(8)',
+      segmented: 'boolean',
     }, {
       primary: 'id',
+      indexes: [
+        ['timestamp'],
+        ['platform', 'guildId']
+      ]
     })
+
+    ctx.model.extend('w-message-word', {
+      messageId: 'string',
+      platform: 'string',
+      guildId: 'string',
+      userId: 'string',
+      timestamp: 'unsigned(8)',
+      index: 'unsigned',
+      word: 'string',
+      tag: 'string',
+    }, {
+      primary: ['messageId', 'index'],
+    })
+
     ctx.model.extend('w-message-guild', {
       platform: 'string',
       guildId: 'string',
@@ -103,7 +129,7 @@ export class MdbService extends Service {
       managerBotId: 'string',
       isTracked: 'boolean',
     }, {
-      primary: [ 'platform', 'guildId' ],
+      primary: ['platform', 'guildId'],
     })
 
     // Extend console.
@@ -114,7 +140,7 @@ export class MdbService extends Service {
 
     // Set up html2canvas proxy.
     if (config.console.proxyMode === 'internal' && ctx.server) {
-      const RESPONSE_TYPES = [ 'blob', 'text' ]
+      const RESPONSE_TYPES = ['blob', 'text']
       ctx.server.get(new URL(config.console.proxyUrl).pathname, async (ktx) => {
         const { url, responseType } = ktx.query
         if (typeof url !== 'string' || ! url) {
@@ -167,7 +193,7 @@ export class MdbService extends Service {
         const durationQuery = this.queryDuration(options.duration)
 
         const userQuery = this.queryUser(session, {
-          ...pick(options, [ 'user' ]),
+          ...pick(options, ['user']),
           validatePlatform: true,
         })
 
@@ -181,7 +207,7 @@ export class MdbService extends Service {
             : {},
         }
 
-        const [ messages, messageTotal ] = await Promise.all([
+        const [messages, messageTotal] = await Promise.all([
           ctx.database
             .select('w-message')
             .where(query)
@@ -255,7 +281,36 @@ export class MdbService extends Service {
           return session.text('.disabled')
         return session.text('.summary', { removed })
       })
-    
+
+    ctx.command('message-db.task')
+
+    ctx.command('message-db.task.list', { authority: 3 })
+      .action(({ session }) => {
+        const tasks = Object.entries(this.tasks)
+
+        return (tasks.length
+          ? <>
+            {session.text('.summary', { count: tasks.length })}
+            <br />
+            {tasks.map(([id, task]) => (
+              <li>{session.text('.task-info', { id, ...task })}</li>
+            ))}
+          </>
+          : session.text('.no-tasks')
+        )
+      })
+
+    ctx.command('message-db.task.abort <id:number>', { authority: 3 })
+      .action(({ session }, id) => {
+        const task = this.tasks[id]
+        if (! task) {
+          return session.text('.not-found', { id })
+        }
+        task.ac.abort()
+        delete this.tasks[id]
+        return session.text('.aborted', { id })
+      })
+
     ctx.command('message-db.stats')
       .action(async ({ session }) => {
         const {
@@ -342,7 +397,7 @@ export class MdbService extends Service {
         const guildQuery = this.queryGuild(session, options)
         const durationQuery = this.queryDuration(options.duration)
 
-        const [ count, guildName ] = await Promise.all([
+        const [count, guildName] = await Promise.all([
           this.ctx.database
             .select('w-message')
             .where({
@@ -373,7 +428,7 @@ export class MdbService extends Service {
 
         const guildQuery = this.queryGuild(session, options)
         const userQuery: UserQuery = this.queryUser(session, {
-          ...pick(options, [ 'user' ]),
+          ...pick(options, ['user']),
           validatePlatform: true,
         })
         const durationQuery = this.queryDuration(options.duration)
@@ -427,17 +482,206 @@ export class MdbService extends Service {
           isTracked: true,
         }
         this.savedGuildMap.set(gid, trackedGuild)
-        await ctx.database.upsert('w-message-guild', [ trackedGuild ])
+        await ctx.database.upsert('w-message-guild', [trackedGuild])
 
         return session.text('.guild-tracked')
       })
+
+    ctx.command('message-db.segment')
+
+    ctx.command('message-db.segment.run', { authority: 4 })
+      .option('duration', '-d <duration:string>')
+      .option('global', '-G')
+      .option('guild', '-g <guild:channel>', { conflictsWith: 'global' })
+      .option('quiet', '-q')
+      .action(async ({ session, options }) => {
+        if (! ctx.jieba) return session.text('message-db.error.jieba-not-loaded')
+
+        await this.runTask('segment', async signal => {
+          ctx.logger.info('segment start')
+
+          const guildQuery = this.queryGuild(session, options)
+          const durationQuery = this.queryDuration(options.duration)
+
+          const BATCH_SIZE = 2000
+          let messageIndex = 0
+          let batchIndex = 0
+
+          ctx.logger.info('init jieba')
+          const jieba = new ctx.jieba.Jieba()
+
+          const [
+            { segmentedCount, totalCount } = { segmentedCount: 0, totalCount: 0 }
+          ] = await ctx.database
+            .select('w-message')
+            .where({
+              ...guildQuery,
+              ...durationQuery,
+              segmented: false,
+            })
+            .groupBy([], {
+              segmentedCount: row => $.sum($.number(row.segmented)),
+              totalCount: row => $.count(row.id),
+            })
+            .execute()
+
+          const leftBatch = Math.ceil((totalCount - segmentedCount) / BATCH_SIZE)
+
+          ctx.logger.info(
+            `segment progress: ${segmentedCount} / ${totalCount} messages, ` +
+            `${leftBatch} batches left`
+          )
+
+          while (true) {
+            if (signal.aborted) {
+              ctx.logger.info('aborted')
+              return
+            }
+
+            const progress = `${(batchIndex / leftBatch * 100).toFixed(2)}%`
+            ctx.logger.info(`batch ${batchIndex}: select, index: ${messageIndex}, ${progress}`)
+
+            const messages = await ctx.database
+              .select('w-message')
+              .where({
+                ...guildQuery,
+                ...durationQuery,
+                segmented: false,
+              })
+              .project({
+                messageId: row => row.id,
+                content: row => row.content,
+                platform: row => row.platform,
+                guildId: row => row.guildId,
+                userId: row => row.userId,
+                timestamp: row => row.timestamp,
+              })
+              .limit(BATCH_SIZE)
+              .execute()
+
+            if (! messages.length) break
+
+            ctx.logger.info(`batch ${batchIndex}: segment, first id: ${messages[0].messageId}`)
+
+            const words: SavedMessageWord[] = []
+            for (const { content, ...message } of messages) {
+              const text = h
+                .parse(content)
+                .filter(el => el.type === 'text')
+                .map(el => el.attrs.content)
+                .join('')
+              const taggedWords = jieba.tag(text)
+              taggedWords.forEach((taggedWord, index) => words.push({
+                ...message,
+                index,
+                ...taggedWord,
+              }))
+            }
+
+            ctx.logger.info(`batch ${batchIndex}: upsert messages`)
+            await ctx.database.upsert('w-message', messages.map(message => ({
+              id: message.messageId,
+              segmented: true,
+            })))
+            ctx.logger.info(`batch ${batchIndex}: upsert words, count: ${words.length}`)
+            await ctx.database.upsert('w-message-word', words)
+
+            messageIndex += messages.length
+            batchIndex ++
+          }
+
+          ctx.logger.info('segment done')
+        })
+      })
+
+    ctx.command('message-db.stats.wordcloud')
+      .alias('message-db.stats.wc')
+      .option('global', '-G')
+      .option('guild', '-g <guild:channel>', { conflictsWith: 'global' })
+      .option('user', '-u <user:user>')
+      .option('duration', '-d <duration:string>')
+      .option('top', '-n <count:posint>', { fallback: 100 })
+      .action(async ({ session, options }) => {
+        if (! ctx.wordcloud) {
+          return session.text('message-db.error.wordcloud-not-loaded')
+        }
+
+        if (options.top > 200 || options.top <= 0) {
+          return session.text('message-db.error.wordcloud-top-out-of-range')
+        }
+
+        const guildQuery = this.queryGuild(session, options)
+        const userQuery = this.queryUser(session, {
+          ...pick(options, ['user']),
+          validatePlatform: true,
+        })
+        const durationQuery = this.queryDuration(options.duration)
+
+        console.log('start')
+
+        const words = await this.ctx.database
+          .select('w-message-word')
+          .where({
+            ...guildQuery,
+            ...userQuery,
+            ...durationQuery,
+            tag: { $ne: 'x' },
+          })
+          .project(['word'])
+          .groupBy('word', {
+            weight: () => $.sum(1),
+          })
+          .orderBy('weight', 'desc')
+          .limit(options.top)
+          .execute()
+
+        const wctx = ctx.wordcloud.createWordCloud(words, {})
+
+        return <>
+          {session.text('.summary', {
+            wordTopCount: words.length
+          })}
+          <br />
+          {h.image(await wctx.canvas.toBuffer('png'), 'image/png')}
+        </>
+      })
+
+    // Dispose
+    ctx.on('dispose', () => {
+      for (const { ac } of Object.values(this.tasks)) {
+        ac.abort()
+      }
+    })
   }
 
   private launchTime: number
 
+  private nextTaskId = 0
+  private tasks: Record<number, {
+    ac: AbortController
+    description: string
+    startAt: number
+  }> = {}
+
+  private async runTask(description: string, task: (signal: AbortSignal) => Promise<void>) {
+    const taskId = this.nextTaskId ++
+    const ac = new AbortController()
+    this.tasks[taskId] = {
+      ac,
+      description,
+      startAt: Date.now(),
+    }
+    try {
+      await task(ac.signal)
+    }
+    finally {
+      delete this.tasks[taskId]
+    }
+  }
+
   savedGuildMap = new Map<string, SavedGuild>()
   get savedGuilds() {
-    return [ ...this.savedGuildMap.values() ]
+    return [...this.savedGuildMap.values()]
   }
   get trackedGuilds(): TrackedGuild[] {
     return this.savedGuilds.filter((it): it is TrackedGuild => it.isTracked)
@@ -466,7 +710,7 @@ export class MdbService extends Service {
 
     // Provide data to console.
     const that = this
-    this.ctx.plugin(class MdbProvider extends DataService<MdbProviderData> {
+    this.ctx.plugin(class extends DataService<MdbProviderData> implements MdbProvider {
       constructor(ctx: Context) {
         super(ctx, 'messageDb')
       }
@@ -505,7 +749,7 @@ export class MdbService extends Service {
       async function (this: Client, param: P): Promise<Awaited<R> | MdbRemoteError> {
         if (param.guildQuery) {
           const { platform, guildId } = param.guildQuery
-          const [ binding ] = await that.ctx.database.get('binding', {
+          const [binding] = await that.ctx.database.get('binding', {
             platform,
             aid: this.auth.id,
           })
@@ -531,7 +775,11 @@ export class MdbService extends Service {
     this.ctx.console.addListener('message-db/getMessages', requireGuildMember(bind('getMessages')))
     this.ctx.console.addListener('message-db/getGuildMembers', requireGuildMember(bind('getGuildMembers')))
   }
-  
+
+  stop(): Awaitable<void> {
+    super.stop()
+  }
+
   private checkECharts() {
     if (! this.ctx.echarts)
       throw new SessionError('message-db.error.echarts-not-loaded')
@@ -557,12 +805,12 @@ export class MdbService extends Service {
     options: { user?: string, useSender?: boolean, validatePlatform?: boolean } = {}
   ): UserQuery | undefined {
     if (options.user) {
-      const [ platform, userId ] = options.user.split(':')
+      const [platform, userId] = options.user.split(':')
       if (options.validatePlatform && platform !== session.platform)
-        throw new SessionError('message-db.error.user-platform-mismatch', [ options.useSender ])
+        throw new SessionError('message-db.error.user-platform-mismatch', [options.useSender])
       return { userId }
     }
-    if (options.useSender) return pick(session, [ 'userId' ])
+    if (options.useSender) return pick(session, ['userId'])
   }
 
   private queryGuild(
@@ -570,8 +818,8 @@ export class MdbService extends Service {
     options: { global?: boolean, guild?: string } = {},
   ): GuildQuery | undefined {
     if (options.global || ! session.guildId) return undefined
-    if (! options.guild) return pick(session, [ 'platform', 'guildId' ])
-    const [ platform, guildId ] = options.guild.split(':')
+    if (! options.guild) return pick(session, ['platform', 'guildId'])
+    const [platform, guildId] = options.guild.split(':')
     return { platform, guildId }
   }
 
@@ -603,7 +851,7 @@ export class MdbService extends Service {
   }): StrictEChartsOption {
     const total = sumBy(data, it => it.value)
     const threshold = total * 0.01
-    const [ majors, minors ] = divide(data, it => it.value > threshold)
+    const [majors, minors] = divide(data, it => it.value > threshold)
     const other = {
       name: i18n.text('message-db.chart.other'),
       value: sumBy(minors, it => it.value),
@@ -656,7 +904,7 @@ export class MdbService extends Service {
   private createI18n(locales: string[]): UniversalI18n {
     return {
       text: (path: string, params?: Record<string, any>) =>
-        this.ctx.i18n.render(locales, [ path ], params).map(String).join(''),
+        this.ctx.i18n.render(locales, [path], params).map(String).join(''),
     }
   }
 
@@ -694,7 +942,7 @@ export class MdbService extends Service {
   }
 
   async stats(): Promise<MdbStats> {
-    const [ messageCount, dbStats ] = await Promise.all([
+    const [messageCount, dbStats] = await Promise.all([
       this.ctx.database
         .select('w-message')
         .execute(row => $.count(row.id)),
@@ -716,13 +964,13 @@ export class MdbService extends Service {
   async statsGuilds({
     durationQuery,
   }: MdbStatsGuildsOption): Promise<MdbStatsGuilds> {
-    const [ data, guildLists ] = await Promise.all([
+    const [data, guildLists] = await Promise.all([
       this.ctx.database
         .select('w-message')
         .where({
           ...durationQuery,
         })
-        .groupBy([ 'platform', 'guildId' ], {
+        .groupBy(['platform', 'guildId'], {
           count: row => $.count(row.id),
         })
         .orderBy('count', 'desc')
@@ -741,7 +989,7 @@ export class MdbService extends Service {
 
     const guildMap = new Map(
       guildLists.flatMap(({ platform, list }) => list
-        .map(guild => [ `${platform}:${guild.id}`, guild ])
+        .map(guild => [`${platform}:${guild.id}`, guild])
       )
     )
 
@@ -781,7 +1029,7 @@ export class MdbService extends Service {
   }: MdbStatsMembersOption): Promise<MdbStatsMembers> {
     this.checkSaved(guildQuery)
 
-    const [ data, memberList ] = await Promise.all([
+    const [data, memberList] = await Promise.all([
       this.ctx.database
         .select('w-message')
         .where({
@@ -837,7 +1085,7 @@ export class MdbService extends Service {
   async statsTime({ guildQuery, userQuery, durationQuery }: MdbStatsTimeOption) {
     const timezoneOffset = (this.ctx.root.config.timezoneOffset as number) * 60 * 1000
 
-    const [ timeData, guild ] = await Promise.all([
+    const [timeData, guild] = await Promise.all([
       this.ctx.database
         .select('w-message')
         .where({
@@ -859,7 +1107,7 @@ export class MdbService extends Service {
             7
           ),
         })
-        .groupBy([ 'weekday', 'hour' ], {
+        .groupBy(['weekday', 'hour'], {
           count: row => $.count(row.id),
         })
         .execute(),
@@ -895,7 +1143,7 @@ export class MdbService extends Service {
       },
       yAxis: {
         type: 'category',
-        data: [ 'Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat' ],
+        data: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'],
       },
       visualMap: {
         min: 0,
@@ -913,7 +1161,7 @@ export class MdbService extends Service {
         type: 'heatmap',
         silent: ! isStatic,
         label: { show: true },
-        data: data.timeData.map(it => [ it.hour, it.weekday, it.count ]),
+        data: data.timeData.map(it => [it.hour, it.weekday, it.count]),
       },
       backgroundColor: isStatic ? '#fff' : undefined,
     }
@@ -989,7 +1237,7 @@ export class MdbService extends Service {
     // If the bot is a NapCat bot,
     // we can use the last message ID before the time as the start token.
     if (bot.platform === 'onebot' && (bot.internal as NapCatBot<Context>).isNapCat) {
-      const [ message ] = await this.ctx.database
+      const [message] = await this.ctx.database
         .select('w-message')
         .where({ timestamp: { $lt: time } })
         .orderBy('timestamp', 'desc')
@@ -1008,7 +1256,7 @@ export class MdbService extends Service {
     if (this.config.readonly) return
 
     // Ignore non-guild messages.
-    const { platform, selfId, guildId, userId, username, timestamp, messageId } = session
+    const { platform, selfId, guildId, userId, username, timestamp, messageId, quote } = session
     if (! session.guildId) return
 
     // Check if the guild is tracked.
@@ -1027,7 +1275,7 @@ export class MdbService extends Service {
           isTracked: false,
         }
         this.savedGuildMap.set(getGid(session), savedGuild)
-        await this.ctx.database.upsert('w-message-guild', [ savedGuild ])
+        await this.ctx.database.upsert('w-message-guild', [savedGuild])
         this.logger.info('saved guild %s', getGid(session))
       }
     }
@@ -1051,10 +1299,12 @@ export class MdbService extends Service {
       userId,
       username,
       content,
-      timestamp
+      timestamp,
+      quote: quote.id,
+      segmented: false,
     }
 
-    const { inserted } = await this.ctx.database.upsert('w-message', [ message ])
+    const { inserted } = await this.ctx.database.upsert('w-message', [message])
 
     // Emit message event.
     // TODO: Multi-instance broadcast.
@@ -1118,7 +1368,7 @@ export class MdbService extends Service {
             })
 
             // Try to insert it into the database.
-            const { inserted: insertedIt } = await this.ctx.database.upsert('w-message', [ message ])
+            const { inserted: insertedIt } = await this.ctx.database.upsert('w-message', [message])
             inserted += insertedIt
 
             // The fetching is done if
@@ -1130,7 +1380,6 @@ export class MdbService extends Service {
             ) return { guild, type: 'ok', inserted, exit: 'done' }
           }
 
-          // 
           return { guild, type: 'ok', inserted, exit: 'exhausted' }
         }
         catch (err) {
@@ -1141,7 +1390,7 @@ export class MdbService extends Service {
     )
 
     // Log the results.
-    const [ errors, oks ] = divide(results, it => it.type === 'error')
+    const [errors, oks] = divide(results, it => it.type === 'error')
     const result: FetchHistoryResult = {
       results,
       errorCount: errors.length,
@@ -1259,7 +1508,7 @@ export namespace MdbService {
     console: z
       .object({
         proxyMode: z
-          .union([ 'disable', 'external', 'internal' ])
+          .union(['disable', 'external', 'internal'])
           .default('disable')
           .description('Proxy mode for console.'),
         proxyUrl: z
