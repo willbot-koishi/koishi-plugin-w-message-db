@@ -1300,7 +1300,7 @@ export class MdbService extends Service {
       username,
       content,
       timestamp,
-      quote: quote.id,
+      quote: quote?.id,
       segmented: false,
     }
 
