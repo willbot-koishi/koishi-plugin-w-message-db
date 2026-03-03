@@ -50,7 +50,7 @@ export interface SavedMessage extends SavedMessageHeader {
   id: string
   username: string
   content: string
-  quote: string
+  quoteId?: string
   segmented: boolean
 }
 

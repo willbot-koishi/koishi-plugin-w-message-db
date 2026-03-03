@@ -101,6 +101,7 @@ export class MdbService extends Service {
       content: 'text',
       timestamp: 'unsigned(8)',
       segmented: 'boolean',
+      quoteId: 'string',
     }, {
       primary: 'id',
       indexes: [
@@ -1300,7 +1301,7 @@ export class MdbService extends Service {
       username,
       content,
       timestamp,
-      quote: quote?.id,
+      quoteId: quote?.id,
       segmented: false,
     }
 
