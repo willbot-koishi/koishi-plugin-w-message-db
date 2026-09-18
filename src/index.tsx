@@ -1238,15 +1238,20 @@ export class MdbService extends Service {
   /**
    * Get the start token of the message history before the specified time.
    * @param bot The bot
+   * @param guildId The guild ID
    * @param time The timestamp to start from
    */
-  async getStartTokenBefore(bot: Bot, time: number): Promise<string | undefined> {
+  async getStartTokenBefore(bot: Bot, guildId: string, time: number): Promise<string | undefined> {
     // If the bot is a NapCat bot,
     // we can use the last message ID before the time as the start token.
     if (bot.platform === 'onebot' && (bot.internal as NapCatBot<Context>).isNapCat) {
       const [message] = await this.ctx.database
         .select('w-message')
-        .where({ timestamp: { $lt: time } })
+        .where({
+          platform: bot.platform,
+          guildId,
+          timestamp: { $lt: time },
+        })
         .orderBy('timestamp', 'desc')
         .limit(1)
         .execute()
@@ -1331,6 +1336,15 @@ export class MdbService extends Service {
     stopOnOld = true,
     maxCount = this.config.historyFetching.maxCount,
   }: FetchHistoryOptions): Promise<FetchHistoryResult> {
+    // All guild workers share the same budget. JavaScript runs the decrement
+    // synchronously, so concurrent workers cannot reserve the same slot.
+    let remaining = maxCount
+    const reserve = () => {
+      if (remaining <= 0) return false
+      remaining --
+      return true
+    }
+
     const results = await Promise.all(
       // Fetch message history from all tracked guilds.
       this.trackedGuilds.map(async (guild): Promise<FetchHistoryGuildResult> => {
@@ -1341,29 +1355,37 @@ export class MdbService extends Service {
         if (! bot || ! bot.isActive)
           return { guild, type: 'error', error: 'bot-not-available' }
 
-        // We will fetch message history from new to old.
-        // If `duration.end` is specified, we will start from the last message before the end;
-        // otherwise, we will start from the recent message.
-        const startToken = duration.end
-          ? await this.getStartTokenBefore(bot, duration.end)
-          : undefined
-
         // Start fetching message history.
         try {
+          // We will fetch message history from new to old. NapCat can use a
+          // saved message in this guild as an efficient cursor for `end`.
+          const startToken = duration.end !== null
+            ? await this.getStartTokenBefore(bot, guildId, duration.end)
+            : undefined
+
           // Get the asynchronous message iterator from `startToken`.
           const iter = this.getMessageIter(bot, guildId, startToken, this.config.historyFetching.pageSize)
-          let count = 0
           let inserted = 0
           for await (const msg of iter) {
-            // Fetch no more than `maxCount` messages.
-            if (count ++ === maxCount)
-              return { guild, type: 'ok', inserted, exit: 'reached-max' }
+            const { content, timestamp } = msg
+
+            // Adapters without a usable time cursor still start from the most
+            // recent message, so explicitly discard messages after `end`.
+            if (duration.end !== null && timestamp > duration.end) continue
+
+            // Iteration is newest-first; reaching `start` completes this guild.
+            if (duration.start !== null && timestamp < duration.start)
+              return { guild, type: 'ok', inserted, exit: 'done' }
 
             // Skip empty messages.
-            if (! msg.content) continue
+            if (! content) continue
+
+            // Fetch no more than `maxCount` eligible messages across the task.
+            if (! reserve())
+              return { guild, type: 'ok', inserted, exit: 'reached-max' }
 
             // Construct the `TrackedMessage` object.
-            const { id, content, timestamp } = msg
+            const { id } = msg
             const message = ({
               id,
               platform,
@@ -1372,6 +1394,8 @@ export class MdbService extends Service {
               username: msg.user.nick || msg.user.name,
               content,
               timestamp,
+              quoteId: msg.quote?.id,
+              segmented: false,
             })
 
             // Try to insert it into the database.
@@ -1380,11 +1404,8 @@ export class MdbService extends Service {
 
             // The fetching is done if
             // 1. `stopOnOld` is enabled and the message exists in the database;
-            // 2. the message is older than the `duration.start`.
-            if (
-              ! insertedIt && stopOnOld ||
-              timestamp < duration.start
-            ) return { guild, type: 'ok', inserted, exit: 'done' }
+            if (! insertedIt && stopOnOld)
+              return { guild, type: 'ok', inserted, exit: 'done' }
           }
 
           return { guild, type: 'ok', inserted, exit: 'exhausted' }
