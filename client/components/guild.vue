@@ -89,12 +89,17 @@ const clearMessages = () => {
   activeRequestId ++
   messageLoadingState.value = 'idle'
   guildMessages.value.length = 0
+  isSelecting.value = false
+  selectedMessageKeys.value = []
   loadedMessageKeys.clear()
   hasMore.value = { before: true, after: true }
 }
 
 type MessageLoadingState = 'idle' | 'loading'
 const messageLoadingState = ref<MessageLoadingState>('idle')
+const isSelecting = ref(false)
+const selectedMessageKeys = ref<string[]>([])
+const selectedMessageKeySet = computed(() => new Set(selectedMessageKeys.value))
 
 const getTimestamp = (value: TimeValue) => value instanceof Date
   ? value.getTime()
@@ -146,6 +151,8 @@ const applyFilter = () => {
   activeRequestId ++
   messageLoadingState.value = 'idle'
   activeFilter.value = filter
+  isSelecting.value = false
+  selectedMessageKeys.value = []
   if (isFilterActive.value) filteredMessages.value = []
   rebuildLoadedMessageKeys()
   hasMore.value = { before: true, after: true }
@@ -234,10 +241,6 @@ const scrollToMessage = (messageKey: string) => {
     block: 'nearest',
   })
 }
-
-const isSelecting = ref(false)
-const selectedMessageKeys = ref<string[]>([])
-const selectedMessageKeySet = computed(() => new Set(selectedMessageKeys.value))
 
 const onMessageClick = (event: MouseEvent, baseIndex: number) => {
   if (! event.shiftKey) return
@@ -381,7 +384,7 @@ onBeforeUnmount(() => {
             <el-radio-button value="regex">正则表达式</el-radio-button>
           </el-radio-group>
           <label>
-            <span>消息类型</span>
+            <span>类型（任一）</span>
             <el-checkbox-group v-model="filterDraft.types" class="filter-types">
               <el-checkbox
                 v-for="type of MESSAGE_TYPE_OPTIONS"
