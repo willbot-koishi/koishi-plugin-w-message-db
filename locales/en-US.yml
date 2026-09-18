@@ -6,6 +6,7 @@ message-db:
     guild-only: "Please call this command in a guild."
     guild-not-tracked: "This guild is not tracked."
     guild-already-tracked: "This guild is already tracked."
+    bot-not-available: "The manager bot for this guild is not available."
     user-platform-mismatch: "UID {0} is on another platform."
     readonly: "Message database is in readonly mode."
     echarts-not-loaded: "ECharts service is not loaded."

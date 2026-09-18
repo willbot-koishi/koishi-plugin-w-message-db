@@ -644,8 +644,6 @@ export class MdbService extends Service {
         })
         const durationQuery = this.queryDuration(options.duration)
 
-        console.log('start')
-
         const words = await this.ctx.database
           .select('w-message-word-v2')
           .where({
@@ -777,7 +775,8 @@ export class MdbService extends Service {
         try {
           return that[method].call(that, ...params)
         }
-        catch {
+        catch (error) {
+          that.logger.warn('console method %s failed: %s', method, error)
           return { error: 'internal' }
         }
       } as unknown as this[M]
@@ -803,6 +802,7 @@ export class MdbService extends Service {
 
           if (! binding) return { error: 'require-guild-member' }
           const bot = that.getManagerBotOf(param.guildQuery)
+          if (! bot?.isActive) return { error: 'bot-not-available' }
           const isMember = await bot.getGuildMember(guildId, binding.pid)
             .then(() => true).catch(() => false)
           if (! isMember) return { error: 'require-guild-member' }
@@ -942,13 +942,21 @@ export class MdbService extends Service {
     return this.savedGuilds.map(it => it.managerBotId)
   }
   get managerBots() {
-    return this.ctx.bots.filter(it => this.managerBotIds.includes(it.selfId))
+    return this.ctx.bots.filter(it => it.isActive && this.managerBotIds.includes(it.selfId))
   }
 
   getManagerBotOf(guildQuery: GuildQuery) {
-    const { managerBotId } = this.savedGuildMap.get(getGid(guildQuery))
+    const savedGuild = this.savedGuildMap.get(getGid(guildQuery))
+    if (! savedGuild) return
     return this.ctx.bots
-      .find(it => it.platform === guildQuery.platform && it.selfId === managerBotId)
+      .find(it => it.platform === guildQuery.platform && it.selfId === savedGuild.managerBotId)
+  }
+
+  private requireManagerBotOf(guildQuery: GuildQuery) {
+    const bot = this.getManagerBotOf(guildQuery)
+    if (! bot?.isActive)
+      throw new SessionError('message-db.error.bot-not-available')
+    return bot
   }
 
   private createI18n(locales: string[]): UniversalI18n {
@@ -1005,7 +1013,7 @@ export class MdbService extends Service {
   }
 
   async getGuildMembers({ guildQuery }: GetGuildMembersOption): Promise<GuildMember[]> {
-    const bot = this.getManagerBotOf(guildQuery)
+    const bot = this.requireManagerBotOf(guildQuery)
     return bot.getGuildMemberList(guildQuery.guildId).then(it => it.data)
   }
 
@@ -1110,7 +1118,7 @@ export class MdbService extends Service {
         .orderBy('count', 'desc')
         .execute(),
       this
-        .getManagerBotOf(guildQuery)
+        .requireManagerBotOf(guildQuery)
         .getGuildMemberList(guildQuery.guildId)
         .then(it => it.data)
     ])

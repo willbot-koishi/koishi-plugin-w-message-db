@@ -18,6 +18,7 @@ export type MdbRemoteMethod =
 
 export type MdbRemoteError =
   | { error: 'internal' }
+  | { error: 'bot-not-available' }
   | { error: 'require-guild-member' }
 
 export type MdbEvents = {
