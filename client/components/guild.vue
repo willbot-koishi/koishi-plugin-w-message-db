@@ -1,10 +1,13 @@
 <script setup lang="ts">
 import { send, store } from '@koishijs/client'
 
-import { SavedMessage } from '../../src/types'
+import { MdbRemoteError, SavedMessage } from '../../src/types'
 import { storeWrappedReactive } from '../utils/storage'
 
-import { useTemplateRef, ref, watch, nextTick, onDeactivated, onActivated, computed, toValue } from 'vue'
+import {
+  useTemplateRef, ref, watch, nextTick,
+  onBeforeUnmount, onActivated, onDeactivated, computed,
+} from 'vue'
 import html2canvas from 'html2canvas'
 import WMessage from './message.vue'
 import { useMessageStore } from '../stores/message'
@@ -18,6 +21,16 @@ const props = defineProps<{
 const { messageMap } = useMessageStore()
 
 const guildMessages = storeWrappedReactive<SavedMessage[]>(() => `message-db/guildMessages/${props.gid}`, [])
+for (const message of guildMessages.value) {
+  messageMap.set(message.id, message)
+}
+
+const clearMessages = () => {
+  for (const message of guildMessages.value) {
+    messageMap.delete(message.id)
+  }
+  guildMessages.value.length = 0
+}
 
 type MessageLoadingState = 'idle' | 'loading'
 const messageLoadingState = ref<MessageLoadingState>('idle')
@@ -40,15 +53,19 @@ const loadMessages = async (direction: 'before' | 'after') => {
     baseId = base.id
   }
 
-  let messageSlice = await send('message-db/getMessages', {
-    guildQuery,
-    baseTimestamp,
-    baseId,
-    direction,
-    limit: 100,
-  })
-
-  messageLoadingState.value = 'idle'
+  let messageSlice: SavedMessage[] | MdbRemoteError
+  try {
+    messageSlice = await send('message-db/getMessages', {
+      guildQuery,
+      baseTimestamp,
+      baseId,
+      direction,
+      limit: 100,
+    })
+  }
+  finally {
+    messageLoadingState.value = 'idle'
+  }
 
   if ('error' in messageSlice) {
     return
@@ -131,7 +148,6 @@ const exportToImage = async () => {
 
   try {
     const { proxyUrl } = store.messageDb.config.console
-    console.log(proxyUrl)
     const canvas = await html2canvas(messagesEl.value, {
       backgroundColor: null,
       useCORS: ! proxyUrl,
@@ -146,6 +162,7 @@ const exportToImage = async () => {
     a.href = url
     a.download = `messages-${props.gid}.png`
     a.click()
+    setTimeout(() => URL.revokeObjectURL(url))
   }
   finally {
     imageExportingState.value = 'idle'
@@ -163,6 +180,9 @@ onActivated(() => {
 
 onDeactivated(() => {
   isActivated.value = false
+})
+
+onBeforeUnmount(() => {
   guildMessages[Symbol.dispose]()
 })
 </script>
@@ -171,7 +191,7 @@ onDeactivated(() => {
   <Teleport v-if="isActivated" :to="toolbarEl">
     <div class="toolbar-select group">
       <el-checkbox v-model="showTime" border>显示时间</el-checkbox>
-      <el-button @click="guildMessages.value.length = 0">清空</el-button>
+      <el-button @click="clearMessages">清空</el-button>
       <el-checkbox v-model="isSelecting" border>多选</el-checkbox>
       <template v-if="isSelecting">
         <span>
