@@ -1,4 +1,4 @@
-import { Context } from 'koishi'
+import { $, Context } from 'koishi'
 
 import {
   LegacySavedMessage,
@@ -13,6 +13,8 @@ import { getMessageTypeMask } from './query'
 
 export const MESSAGE_MIGRATION_ID = 'v2'
 export const MESSAGE_TYPE_MIGRATION_ID = 'v3-message-types'
+export const MESSAGE_MIGRATION_PROGRESS_ID = `${MESSAGE_MIGRATION_ID}-progress`
+export const MESSAGE_TYPE_MIGRATION_PROGRESS_ID = `${MESSAGE_TYPE_MIGRATION_ID}-progress`
 const MIGRATION_BATCH_SIZE = 500
 
 declare module 'koishi' {
@@ -108,7 +110,10 @@ export function extendMessageModels(ctx: Context) {
 
   ctx.model.extend('w-message-migration', {
     id: 'string',
-    completedAt: 'timestamp',
+    cursor: { type: 'string', nullable: true, initial: null },
+    processed: { type: 'unsigned', length: 8, initial: 0 },
+    total: { type: 'unsigned', length: 8, initial: 0 },
+    completedAt: { type: 'timestamp', nullable: true, initial: null },
   }, {
     primary: 'id',
   })
@@ -120,22 +125,58 @@ export interface MessageMigrationResult {
   words: number
 }
 
-export async function migrateMessageV2(ctx: Context): Promise<MessageMigrationResult> {
-  const [completed] = await ctx.database.get('w-message-migration', {
-    id: MESSAGE_MIGRATION_ID,
-  })
-  if (completed) return { skipped: true, messages: 0, words: 0 }
+export interface MessageMigrationProgress {
+  id: string
+  processed: number
+  total: number
+  completed: boolean
+}
 
-  let cursor: string | undefined
+export interface MessageMigrationOptions {
+  batchSize?: number
+  signal?: AbortSignal
+  onProgress?: (progress: MessageMigrationProgress) => void
+}
+
+export async function migrateMessageV2(
+  ctx: Context,
+  options: MessageMigrationOptions = {},
+): Promise<MessageMigrationResult> {
+  const state = await getMigrationProgress(
+    ctx,
+    MESSAGE_MIGRATION_ID,
+    MESSAGE_MIGRATION_PROGRESS_ID,
+  )
+  if (state?.completedAt) return { skipped: true, messages: 0, words: 0 }
+
+  const batchSize = Math.max(1, Math.floor(options.batchSize ?? MIGRATION_BATCH_SIZE))
+  let cursor = state?.cursor ?? undefined
+  let processed = state?.processed ?? 0
+  const total = state?.total || await ctx.database
+    .select('w-message')
+    .execute(row => $.count(row.id))
   let messageCount = 0
   let wordCount = 0
+  await saveMigrationProgress(ctx, {
+    id: MESSAGE_MIGRATION_PROGRESS_ID,
+    cursor,
+    processed,
+    total,
+  })
+  options.onProgress?.({
+    id: MESSAGE_MIGRATION_ID,
+    processed,
+    total,
+    completed: false,
+  })
 
   while (true) {
+    options.signal?.throwIfAborted()
     const legacyMessages = await ctx.database
       .select('w-message')
       .where(cursor === undefined ? {} : { id: { $gt: cursor } })
       .orderBy('id')
-      .limit(MIGRATION_BATCH_SIZE)
+      .limit(batchSize)
       .execute()
     if (! legacyMessages.length) break
 
@@ -159,17 +200,38 @@ export async function migrateMessageV2(ctx: Context): Promise<MessageMigrationRe
 
     messageCount += messages.length
     wordCount += words.length
+    processed += messages.length
     cursor = legacyMessages.at(-1)!.id
+    await saveMigrationProgress(ctx, {
+      id: MESSAGE_MIGRATION_PROGRESS_ID,
+      cursor,
+      processed,
+      total,
+    })
+    options.onProgress?.({
+      id: MESSAGE_MIGRATION_ID,
+      processed,
+      total,
+      completed: false,
+    })
   }
 
-  await ctx.database.create('w-message-migration', {
+  options.signal?.throwIfAborted()
+  await saveMigrationProgress(ctx, {
     id: MESSAGE_MIGRATION_ID,
+    cursor,
+    processed,
+    total,
     completedAt: new Date(),
-  }).catch(async error => {
-    const [marker] = await ctx.database.get('w-message-migration', {
-      id: MESSAGE_MIGRATION_ID,
-    })
-    if (! marker) throw error
+  })
+  await ctx.database.remove('w-message-migration', {
+    id: MESSAGE_MIGRATION_PROGRESS_ID,
+  })
+  options.onProgress?.({
+    id: MESSAGE_MIGRATION_ID,
+    processed,
+    total,
+    completed: true,
   })
 
   return {
@@ -179,20 +241,44 @@ export async function migrateMessageV2(ctx: Context): Promise<MessageMigrationRe
   }
 }
 
-export async function migrateMessageTypes(ctx: Context): Promise<MessageMigrationResult> {
-  const [completed] = await ctx.database.get('w-message-migration', {
-    id: MESSAGE_TYPE_MIGRATION_ID,
-  })
-  if (completed) return { skipped: true, messages: 0, words: 0 }
+export async function migrateMessageTypes(
+  ctx: Context,
+  options: MessageMigrationOptions = {},
+): Promise<MessageMigrationResult> {
+  const state = await getMigrationProgress(
+    ctx,
+    MESSAGE_TYPE_MIGRATION_ID,
+    MESSAGE_TYPE_MIGRATION_PROGRESS_ID,
+  )
+  if (state?.completedAt) return { skipped: true, messages: 0, words: 0 }
 
-  let cursor: string | undefined
+  const batchSize = Math.max(1, Math.floor(options.batchSize ?? MIGRATION_BATCH_SIZE))
+  let cursor = state?.cursor ?? undefined
+  let processed = state?.processed ?? 0
+  const total = state?.total || await ctx.database
+    .select('w-message-v2')
+    .execute(row => $.count(row.key))
   let messageCount = 0
+  await saveMigrationProgress(ctx, {
+    id: MESSAGE_TYPE_MIGRATION_PROGRESS_ID,
+    cursor,
+    processed,
+    total,
+  })
+  options.onProgress?.({
+    id: MESSAGE_TYPE_MIGRATION_ID,
+    processed,
+    total,
+    completed: false,
+  })
+
   while (true) {
+    options.signal?.throwIfAborted()
     const messages = await ctx.database
       .select('w-message-v2')
       .where(cursor === undefined ? {} : { key: { $gt: cursor } })
       .orderBy('key')
-      .limit(MIGRATION_BATCH_SIZE)
+      .limit(batchSize)
       .execute()
     if (! messages.length) break
 
@@ -201,20 +287,105 @@ export async function migrateMessageTypes(ctx: Context): Promise<MessageMigratio
       messageTypeMask: getMessageTypeMask(message.content),
     })))
     messageCount += messages.length
+    processed += messages.length
     cursor = messages.at(-1)!.key
+    await saveMigrationProgress(ctx, {
+      id: MESSAGE_TYPE_MIGRATION_PROGRESS_ID,
+      cursor,
+      processed,
+      total,
+    })
+    options.onProgress?.({
+      id: MESSAGE_TYPE_MIGRATION_ID,
+      processed,
+      total,
+      completed: false,
+    })
   }
 
-  await ctx.database.create('w-message-migration', {
+  options.signal?.throwIfAborted()
+  await saveMigrationProgress(ctx, {
     id: MESSAGE_TYPE_MIGRATION_ID,
+    cursor,
+    processed,
+    total,
     completedAt: new Date(),
-  }).catch(async error => {
-    const [marker] = await ctx.database.get('w-message-migration', {
-      id: MESSAGE_TYPE_MIGRATION_ID,
-    })
-    if (! marker) throw error
+  })
+  await ctx.database.remove('w-message-migration', {
+    id: MESSAGE_TYPE_MIGRATION_PROGRESS_ID,
+  })
+  options.onProgress?.({
+    id: MESSAGE_TYPE_MIGRATION_ID,
+    processed,
+    total,
+    completed: true,
   })
 
   return { skipped: false, messages: messageCount, words: 0 }
+}
+
+export async function markMessageTypesMigrated(
+  ctx: Context,
+  total: number,
+  onProgress?: MessageMigrationOptions['onProgress'],
+) {
+  const [state] = await ctx.database.get('w-message-migration', {
+    id: MESSAGE_TYPE_MIGRATION_ID,
+  })
+  if (state?.completedAt) return
+
+  await saveMigrationProgress(ctx, {
+    id: MESSAGE_TYPE_MIGRATION_ID,
+    processed: total,
+    total,
+    completedAt: new Date(),
+  })
+  await ctx.database.remove('w-message-migration', {
+    id: MESSAGE_TYPE_MIGRATION_PROGRESS_ID,
+  })
+  onProgress?.({
+    id: MESSAGE_TYPE_MIGRATION_ID,
+    processed: total,
+    total,
+    completed: true,
+  })
+}
+
+async function saveMigrationProgress(
+  ctx: Context,
+  state: MessageMigration,
+) {
+  await ctx.database.upsert('w-message-migration', [state])
+}
+
+async function getMigrationProgress(
+  ctx: Context,
+  completedId: string,
+  progressId: string,
+) {
+  const [completed] = await ctx.database.get('w-message-migration', {
+    id: completedId,
+  })
+  if (completed?.completedAt) return completed
+
+  const [progress] = await ctx.database.get('w-message-migration', {
+    id: progressId,
+  })
+  if (progress) {
+    if (completed) {
+      await ctx.database.remove('w-message-migration', { id: completedId })
+    }
+    return progress
+  }
+  if (! completed) return
+
+  // Early development builds stored an incomplete checkpoint under the final
+  // marker ID. Move it away before continuing so older versions, which only
+  // test for the marker's existence, cannot mistake it for a completed run.
+  const migratedProgress = { ...completed, id: progressId }
+  await saveMigrationProgress(ctx, migratedProgress)
+  await ctx.database.remove('w-message-migration', { id: completedId })
+  return migratedProgress
 }
 
 async function validateBatch(

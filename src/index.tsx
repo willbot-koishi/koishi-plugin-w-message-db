@@ -43,11 +43,14 @@ import {
   MdbProvider,
   GetMessageOption,
   GetGuildMembersOption,
+  MessageMigrationStage,
+  MessageMigrationState,
   MdbStatsGuildsOption,
   SavedMessageWord,
 } from './types'
 import {
   extendMessageModels,
+  markMessageTypesMigrated,
   migrateMessageTypes,
   migrateMessageV2,
 } from './model'
@@ -83,6 +86,12 @@ export class MdbService extends Service {
 
   logger = this.ctx.logger('w-message-db')
   private proxyToken = randomUUID()
+  migration: MessageMigrationState = {
+    status: 'pending',
+    processed: 0,
+    total: 0,
+  }
+  private migrationRefreshAt = 0
 
   constructor(ctx: Context, public config: MdbService.Config) {
     super(ctx, 'messageDb')
@@ -196,7 +205,10 @@ export class MdbService extends Service {
     }
 
     // Garbage collection.
-    if (config.gc.enabled) ctx.cron(config.gc.cron, () => this.gc())
+    if (config.gc.enabled) ctx.cron(config.gc.cron, () => {
+      if (this.migration.status !== 'ready') return
+      return this.gc()
+    })
 
     // Commands.
     ctx.command('message-db')
@@ -210,6 +222,7 @@ export class MdbService extends Service {
       .option('withTime', '-t, --with-time', { fallback: false })
       .option('search', '-s <regexp:string>')
       .action(async ({ options, session }) => {
+        this.checkMigrationReady()
         const guildQuery = this.queryGuild(session, options)
         if (! guildQuery)
           throw new SessionError('message-db.error.guild-only')
@@ -416,6 +429,7 @@ export class MdbService extends Service {
       .option('guild', '-g <guild:channel>', { conflictsWith: 'global' })
       .option('duration', '-d <duration:string>')
       .action(async ({ session, options }) => {
+        this.checkMigrationReady()
         const userQuery = this.queryUser(session, {
           useSender: true,
           validatePlatform: true,
@@ -522,6 +536,7 @@ export class MdbService extends Service {
       .option('guild', '-g <guild:channel>', { conflictsWith: 'global' })
       .option('quiet', '-q')
       .action(async ({ session, options }) => {
+        this.checkMigrationReady()
         if (! ctx.jieba) return session.text('message-db.error.jieba-not-loaded')
 
         await this.runTask('segment', async signal => {
@@ -632,6 +647,7 @@ export class MdbService extends Service {
       .option('duration', '-d <duration:string>')
       .option('top', '-n <count:posint>', { fallback: 100 })
       .action(async ({ session, options }) => {
+        this.checkMigrationReady()
         if (! ctx.wordcloud) {
           return session.text('message-db.error.wordcloud-not-loaded')
         }
@@ -716,19 +732,6 @@ export class MdbService extends Service {
   }
 
   async start() {
-    const migration = await migrateMessageV2(this.ctx)
-    if (! migration.skipped) {
-      this.logger.info(
-        'migrated %d messages and %d word records to v2',
-        migration.messages,
-        migration.words,
-      )
-    }
-    const typeMigration = await migrateMessageTypes(this.ctx)
-    if (! typeMigration.skipped) {
-      this.logger.info('indexed message types for %d messages', typeMigration.messages)
-    }
-
     // Load saved guilds from database.
     this.savedGuildMap = await this.ctx.database
       .get('w-message-guild', {})
@@ -738,16 +741,6 @@ export class MdbService extends Service {
     const saveMessage = this.saveMessage.bind(this)
     this.ctx.on('message', saveMessage)
     this.ctx.on('send', saveMessage)
-
-    // Fetch message history of tracked guilds on start.
-    if (! this.config.readonly) {
-      void this.fetchHistory({
-        duration: {
-          start: 0,
-          end: this.launchTime,
-        }
-      })
-    }
 
     // Provide data to console.
     const that = this
@@ -770,6 +763,7 @@ export class MdbService extends Service {
           : that.config
         return {
           config,
+          migration: that.migration,
           savedGuilds: that.savedGuilds,
           trackedGuilds: that.trackedGuilds,
         }
@@ -779,6 +773,9 @@ export class MdbService extends Service {
     // Handle console events.
     const bind = <M extends MdbRemoteMethod>(method: M): this[M] =>
       async function (...params: any[]): Promise<void | MdbRemoteError> {
+        if (that.migration.status !== 'ready') {
+          return { error: 'migration-pending' }
+        }
         try {
           return that[method].call(that, ...params)
         }
@@ -828,6 +825,108 @@ export class MdbService extends Service {
     this.ctx.console.addListener('message-db/statsTimeChart', requireGuildMember(chart(bind('statsTimeChart'))))
     this.ctx.console.addListener('message-db/getMessages', requireGuildMember(bind('getMessages')))
     this.ctx.console.addListener('message-db/getGuildMembers', requireGuildMember(bind('getGuildMembers')))
+
+    // Migrations can take hours on large databases. Run them only after the
+    // console provider and listeners are registered so their progress remains
+    // visible and the rest of the application can finish starting.
+    void this.runTask('database migration', signal => this.migrateDatabase(signal))
+  }
+
+  private async migrateDatabase(signal: AbortSignal) {
+    const onProgress = (stage: MessageMigrationStage) =>
+      ({ processed, total }: { processed: number, total: number }) => {
+        this.updateMigration({
+          status: 'running',
+          stage,
+          processed,
+          total,
+        })
+      }
+
+    try {
+      this.updateMigration({
+        status: 'running',
+        stage: 'messages',
+        processed: 0,
+        total: 0,
+      }, true)
+      const migration = await migrateMessageV2(this.ctx, {
+        signal,
+        onProgress: onProgress('messages'),
+      })
+      const migratedTotal = this.migration.total
+      if (! migration.skipped) {
+        this.logger.info(
+          'migrated %d messages and %d word records to v2',
+          migration.messages,
+          migration.words,
+        )
+      }
+
+      this.updateMigration({
+        status: 'running',
+        stage: 'message-types',
+        processed: 0,
+        total: 0,
+      }, true)
+      if (migration.skipped) {
+        const typeMigration = await migrateMessageTypes(this.ctx, {
+          signal,
+          onProgress: onProgress('message-types'),
+        })
+        if (! typeMigration.skipped) {
+          this.logger.info('indexed message types for %d messages', typeMigration.messages)
+        }
+      }
+      else {
+        // Fresh v2 rows already receive a type mask while they are copied, so
+        // a second full-table pass would only duplicate several hours of work.
+        await markMessageTypesMigrated(
+          this.ctx,
+          migratedTotal,
+          onProgress('message-types'),
+        )
+      }
+
+      signal.throwIfAborted()
+      this.updateMigration({
+        status: 'ready',
+        processed: this.migration.total,
+        total: this.migration.total,
+      }, true)
+
+      // Fetch history only after the v2 tables are complete, otherwise query
+      // results and migration progress would describe a partial data set.
+      if (! this.config.readonly) {
+        void this.fetchHistory({
+          duration: {
+            start: 0,
+            end: this.launchTime,
+          },
+        }).catch(error => {
+          this.logger.warn('failed to fetch history on start: %s', error)
+        })
+      }
+    }
+    catch (error) {
+      if (signal.aborted) return
+      this.logger.error('database migration failed: %s', error)
+      this.updateMigration({
+        ...this.migration,
+        status: 'error',
+        error: String(error),
+      }, true)
+    }
+  }
+
+  private updateMigration(state: MessageMigrationState, force = false) {
+    this.migration = state
+    const now = Date.now()
+    if (! force && now - this.migrationRefreshAt < 1000) return
+    this.migrationRefreshAt = now
+    void Promise.resolve(this.ctx.console.refresh('messageDb')).catch(error => {
+      this.logger.debug('failed to refresh migration progress: %s', error)
+    })
   }
 
   stop(): Awaitable<void> {
@@ -837,6 +936,11 @@ export class MdbService extends Service {
   private checkECharts() {
     if (! this.ctx.echarts)
       throw new SessionError('message-db.error.echarts-not-loaded')
+  }
+
+  private checkMigrationReady() {
+    if (this.migration.status !== 'ready')
+      throw new SessionError('message-db.error.migration-pending')
   }
 
   private checkInGuild(session: Session) {
@@ -983,6 +1087,7 @@ export class MdbService extends Service {
     limit = this.config.pageSize,
     page = 1,
   }: GetMessageOption) {
+    this.checkMigrationReady()
     limit = Number.isSafeInteger(limit) ? Math.max(1, Math.min(limit, 200)) : this.config.pageSize
     page = Number.isSafeInteger(page) ? Math.max(1, page) : 1
     const cursorQuery: Query<SavedMessage> = baseTimestamp === undefined
@@ -1030,6 +1135,7 @@ export class MdbService extends Service {
   }
 
   async stats(): Promise<MdbStats> {
+    this.checkMigrationReady()
     const [messageCount, dbStats] = await Promise.all([
       this.ctx.database
         .select('w-message-v2')
@@ -1052,6 +1158,7 @@ export class MdbService extends Service {
   async statsGuilds({
     durationQuery,
   }: MdbStatsGuildsOption): Promise<MdbStatsGuilds> {
+    this.checkMigrationReady()
     const [data, guildLists] = await Promise.all([
       this.ctx.database
         .select('w-message-v2')
@@ -1115,6 +1222,7 @@ export class MdbService extends Service {
     guildQuery,
     durationQuery
   }: MdbStatsMembersOption): Promise<MdbStatsMembers> {
+    this.checkMigrationReady()
     this.checkSaved(guildQuery)
 
     const [data, memberList] = await Promise.all([
@@ -1171,6 +1279,7 @@ export class MdbService extends Service {
   }
 
   async statsTime({ guildQuery, userQuery, durationQuery }: MdbStatsTimeOption) {
+    this.checkMigrationReady()
     const timezoneOffset = (this.ctx.root.config.timezoneOffset as number) * 60 * 1000
 
     const [timeData, guild] = await Promise.all([
@@ -1275,6 +1384,7 @@ export class MdbService extends Service {
    * @returns The number of removed messages
    */
   async gc(): Promise<number | null> {
+    this.checkMigrationReady()
     if (! this.config.gc.enabled) return null
 
     const { olderThan, untrackedOnly } = this.config.gc
@@ -1438,6 +1548,7 @@ export class MdbService extends Service {
     stopOnOld = true,
     maxCount = this.config.historyFetching.maxCount,
   }: FetchHistoryOptions): Promise<FetchHistoryResult> {
+    this.checkMigrationReady()
     // All guild workers share the same budget. JavaScript runs the decrement
     // synchronously, so concurrent workers cannot reserve the same slot.
     let remaining = maxCount

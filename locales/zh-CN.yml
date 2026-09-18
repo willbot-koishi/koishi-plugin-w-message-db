@@ -9,6 +9,7 @@ message-db:
     bot-not-available: "此群组的管理机器人当前不可用。"
     user-platform-mismatch: "UID {0} 属于另一个平台。"
     readonly: "消息数据库处于只读模式。"
+    migration-pending: "消息数据库正在迁移，请稍后再试。"
     echarts-not-loaded: "ECharts 服务未加载。"
     jieba-not-loaded: "Jieba 服务未加载。"
     wordcloud-not-loaded: "词云服务未加载。"

@@ -7,8 +7,11 @@ import { Context } from 'koishi'
 import { createMessageKey } from '../shared/utils'
 import {
   extendMessageModels,
+  markMessageTypesMigrated,
   MESSAGE_MIGRATION_ID,
+  MESSAGE_MIGRATION_PROGRESS_ID,
   MESSAGE_TYPE_MIGRATION_ID,
+  MESSAGE_TYPE_MIGRATION_PROGRESS_ID,
   migrateMessageTypes,
   migrateMessageV2,
 } from '../src/model'
@@ -125,6 +128,47 @@ describe('message v2 model', () => {
     })
   })
 
+  it('resumes the legacy migration after its last durable batch', async () => {
+    const ctx = await createContext()
+    await ctx.database.upsert('w-message', ['1', '2'].map(id => ({
+      id,
+      platform: 'onebot',
+      guildId: '100',
+      userId: '1',
+      username: 'Alice',
+      content: `message ${id}`,
+      timestamp: Number(id),
+      segmented: false,
+    })))
+
+    const controller = new AbortController()
+    await assert.rejects(migrateMessageV2(ctx, {
+      batchSize: 1,
+      signal: controller.signal,
+      onProgress(progress) {
+        if (progress.processed === 1) controller.abort()
+      },
+    }), { name: 'AbortError' })
+
+    const [checkpoint] = await ctx.database.get('w-message-migration', {
+      id: MESSAGE_MIGRATION_PROGRESS_ID,
+    })
+    assert.equal(checkpoint.cursor, '1')
+    assert.equal(checkpoint.processed, 1)
+    assert.equal(checkpoint.total, 2)
+    assert.equal(checkpoint.completedAt, null)
+    assert.equal((await ctx.database.get('w-message-migration', {
+      id: MESSAGE_MIGRATION_ID,
+    })).length, 0)
+
+    assert.deepEqual(await migrateMessageV2(ctx, { batchSize: 1 }), {
+      skipped: false,
+      messages: 1,
+      words: 0,
+    })
+    assert.equal((await ctx.database.get('w-message-v2', {})).length, 2)
+  })
+
   it('indexes message element types for existing v2 rows', async () => {
     const ctx = await createContext()
     const key = createMessageKey({ platform: 'discord', guildId: '200', id: '42' })
@@ -152,6 +196,66 @@ describe('message v2 model', () => {
     assert.equal((await ctx.database.get('w-message-migration', {
       id: MESSAGE_TYPE_MIGRATION_ID,
     })).length, 1)
+  })
+
+  it('resumes message type indexing after its last durable batch', async () => {
+    const ctx = await createContext()
+    const messages = ['1', '2'].map(id => ({
+      key: createMessageKey({ platform: 'discord', guildId: '200', id }),
+      id,
+      platform: 'discord',
+      guildId: '200',
+      userId: '1',
+      username: 'Alice',
+      content: `<img src="${id}"/>`,
+      timestamp: Number(id),
+      segmented: false,
+      messageTypeMask: 0,
+    })).sort((a, b) => a.key.localeCompare(b.key))
+    await ctx.database.upsert('w-message-v2', messages)
+
+    const controller = new AbortController()
+    await assert.rejects(migrateMessageTypes(ctx, {
+      batchSize: 1,
+      signal: controller.signal,
+      onProgress(progress) {
+        if (progress.processed === 1) controller.abort()
+      },
+    }), { name: 'AbortError' })
+
+    const [checkpoint] = await ctx.database.get('w-message-migration', {
+      id: MESSAGE_TYPE_MIGRATION_PROGRESS_ID,
+    })
+    assert.equal(checkpoint.cursor, messages[0].key)
+    assert.equal(checkpoint.processed, 1)
+    assert.equal((await ctx.database.get('w-message-migration', {
+      id: MESSAGE_TYPE_MIGRATION_ID,
+    })).length, 0)
+
+    assert.deepEqual(await migrateMessageTypes(ctx, { batchSize: 1 }), {
+      skipped: false,
+      messages: 1,
+      words: 0,
+    })
+    const indexed = await ctx.database.get('w-message-v2', {})
+    assert.ok(indexed.every(message => message.messageTypeMask === MESSAGE_TYPE_BITS.image))
+  })
+
+  it('can mark message types migrated after a fresh v2 copy', async () => {
+    const ctx = await createContext()
+    await markMessageTypesMigrated(ctx, 42)
+
+    const [marker] = await ctx.database.get('w-message-migration', {
+      id: MESSAGE_TYPE_MIGRATION_ID,
+    })
+    assert.equal(marker.processed, 42)
+    assert.equal(marker.total, 42)
+    assert.ok(marker.completedAt)
+    assert.deepEqual(await migrateMessageTypes(ctx), {
+      skipped: true,
+      messages: 0,
+      words: 0,
+    })
   })
 })
 

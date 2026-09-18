@@ -19,6 +19,7 @@ export type MdbRemoteMethod =
 export type MdbRemoteError =
   | { error: 'internal' }
   | { error: 'bot-not-available' }
+  | { error: 'migration-pending' }
   | { error: 'require-guild-member' }
 
 export type MdbEvents = {
@@ -83,7 +84,20 @@ export interface SavedMessageWord extends TaggedWord, SavedMessageHeader {
 
 export interface MessageMigration {
   id: string
-  completedAt: Date
+  cursor?: string | null
+  processed: number
+  total: number
+  completedAt?: Date | null
+}
+
+export type MessageMigrationStage = 'messages' | 'message-types'
+
+export interface MessageMigrationState {
+  status: 'pending' | 'running' | 'ready' | 'error'
+  stage?: MessageMigrationStage
+  processed: number
+  total: number
+  error?: string
 }
 
 export interface GuildQuery {
@@ -200,6 +214,7 @@ export interface MdbChartOption {
 
 export interface MdbProviderData {
   config: MdbService.Config
+  migration: MessageMigrationState
   savedGuilds: SavedGuild[]
   trackedGuilds: TrackedGuild[]
 }

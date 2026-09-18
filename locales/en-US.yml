@@ -9,6 +9,7 @@ message-db:
     bot-not-available: "The manager bot for this guild is not available."
     user-platform-mismatch: "UID {0} is on another platform."
     readonly: "Message database is in readonly mode."
+    migration-pending: "The message database is being migrated. Please try again later."
     echarts-not-loaded: "ECharts service is not loaded."
     jieba-not-loaded: "Jieba service is not loaded."
     wordcloud-not-loaded: "Wordcloud service is not loaded."
