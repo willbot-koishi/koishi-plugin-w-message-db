@@ -580,13 +580,15 @@ export class MdbService extends Service {
               }))
             }
 
+            ctx.logger.info(`batch ${batchIndex}: upsert words, count: ${words.length}`)
+            await ctx.database.upsert('w-message-word', words)
+            // Mark a message only after all derived rows are durable. If either
+            // write fails, the next run can safely upsert the same word rows.
             ctx.logger.info(`batch ${batchIndex}: upsert messages`)
             await ctx.database.upsert('w-message', messages.map(message => ({
               id: message.messageId,
               segmented: true,
             })))
-            ctx.logger.info(`batch ${batchIndex}: upsert words, count: ${words.length}`)
-            await ctx.database.upsert('w-message-word', words)
 
             messageIndex += messages.length
             batchIndex ++
@@ -1197,7 +1199,20 @@ export class MdbService extends Service {
     const { olderThan, untrackedOnly } = this.config.gc
     const minTime = Date.now() - olderThan * 24 * 60 * 60 * 1000
 
-    const { removed } = await this.ctx.database.remove('w-message', row => $.and(
+    const messageResult = await this.ctx.database.remove('w-message', row => $.and(
+      $.lt(row.timestamp, minTime),
+      untrackedOnly
+        ? $.not(
+          $.in(
+            $.concat(row.platform, ':', row.guildId),
+            this.trackedGuilds.map(getGid)
+          )
+        )
+        : true,
+    ))
+    // Word rows duplicate the message timestamp and guild identity, so they
+    // can be collected even if a previous run removed only the parent rows.
+    const wordResult = await this.ctx.database.remove('w-message-word', row => $.and(
       $.lt(row.timestamp, minTime),
       untrackedOnly
         ? $.not(
@@ -1209,9 +1224,13 @@ export class MdbService extends Service {
         : true,
     ))
 
-    this.logger.info('collected %d messages', removed)
+    this.logger.info(
+      'collected %d messages and %d word records',
+      messageResult.removed,
+      wordResult.removed,
+    )
 
-    return removed
+    return messageResult.removed
   }
 
   /**
