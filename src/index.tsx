@@ -1,5 +1,6 @@
 import { resolve } from 'node:path'
 import { Readable } from 'node:stream'
+import { randomUUID } from 'node:crypto'
 
 import {
   Context, SessionError, Service, Session, Bot,
@@ -81,6 +82,7 @@ export class MdbService extends Service {
   }
 
   logger = this.ctx.logger('w-message-db')
+  private proxyToken = randomUUID()
 
   constructor(ctx: Context, public config: MdbService.Config) {
     super(ctx, 'messageDb')
@@ -140,10 +142,44 @@ export class MdbService extends Service {
     })
 
     // Set up html2canvas proxy.
-    if (config.console.proxyMode === 'internal' && ctx.server) {
+    if (config.console.proxyMode === 'internal') {
+      if (! ctx.server)
+        throw new Error('Internal console proxy requires the server service.')
+      if (! config.console.proxyAllowedHosts.length)
+        throw new Error('Internal console proxy requires at least one allowed host.')
+
+      let proxyUrl: URL
+      try {
+        proxyUrl = new URL(config.console.proxyUrl)
+      }
+      catch {
+        throw new Error('Internal console proxy requires an absolute proxy URL.')
+      }
+
       const RESPONSE_TYPES = ['blob', 'text']
-      ctx.server.get(new URL(config.console.proxyUrl).pathname, async (ktx) => {
-        const { url, responseType } = ktx.query
+      const RESPONSE_HEADERS = [
+        'cache-control', 'content-length', 'content-type',
+        'etag', 'expires', 'last-modified',
+      ]
+      const isAllowed = (target: URL) => {
+        if (target.protocol !== 'http:' && target.protocol !== 'https:') return false
+        const host = target.host.toLowerCase()
+        return config.console.proxyAllowedHosts.some(pattern => {
+          pattern = pattern.trim().toLowerCase()
+          if (pattern.startsWith('*.')) {
+            const suffix = pattern.slice(1)
+            return host.endsWith(suffix) && host.length > suffix.length
+          }
+          return host === pattern
+        })
+      }
+
+      ctx.server.get(proxyUrl.pathname, async (ktx) => {
+        const { token, url, responseType } = ktx.query
+        if (token !== this.proxyToken) {
+          ktx.status = 403
+          return
+        }
         if (typeof url !== 'string' || ! url) {
           ktx.status = 400
           ktx.body = 'Missing `url`.'
@@ -157,17 +193,45 @@ export class MdbService extends Service {
           ktx.body = 'Invalid `responseType`.'
           return
         }
-        const resp = await ctx.http(url, {
-          method: ktx.method as HTTP.Method,
-          headers: ktx.headers,
-          data: ktx.body,
-          responseType: 'stream',
-        })
-        ktx.status = resp.status
-        resp.headers.forEach((value, key) => {
-          ktx.set(key, value)
-        })
-        ktx.body = Readable.fromWeb(resp.data)
+
+        try {
+          let target = new URL(url)
+          let resp: HTTP.Response<ReadableStream<Uint8Array>>
+          for (let redirects = 0; ; redirects ++) {
+            if (! isAllowed(target)) {
+              ktx.status = 403
+              ktx.body = 'Target host is not allowed.'
+              return
+            }
+            if (redirects > 5)
+              throw new Error('Too many redirects.')
+
+            resp = await ctx.http(target.href, {
+              method: 'GET',
+              redirect: 'manual',
+              responseType: 'stream',
+              validateStatus: () => true,
+            })
+            if (resp.status < 300 || resp.status >= 400) break
+
+            const location = resp.headers.get('location')
+            await resp.data.cancel()
+            if (! location) break
+            target = new URL(location, target)
+          }
+
+          ktx.status = resp.status
+          for (const key of RESPONSE_HEADERS) {
+            const value = resp.headers.get(key)
+            if (value !== null) ktx.set(key, value)
+          }
+          ktx.body = Readable.fromWeb(resp.data)
+        }
+        catch (error) {
+          this.logger.warn('console proxy request failed: %s', error)
+          ktx.status = 502
+          ktx.body = 'Failed to fetch target.'
+        }
       })
     }
 
@@ -720,8 +784,19 @@ export class MdbService extends Service {
       }
 
       async get() {
+        const config = that.config.console.proxyMode === 'internal'
+          ? {
+            ...that.config,
+            console: {
+              ...that.config.console,
+              proxyUrl: `${that.config.console.proxyUrl}${
+                that.config.console.proxyUrl.includes('?') ? '&' : '?'
+              }token=${encodeURIComponent(that.proxyToken)}`,
+            },
+          }
+          : that.config
         return {
-          config: that.config,
+          config,
           savedGuilds: that.savedGuilds,
           trackedGuilds: that.trackedGuilds,
         }
@@ -1501,6 +1576,7 @@ export namespace MdbService {
   interface ConsoleConfig {
     proxyMode: 'disable' | 'external' | 'internal'
     proxyUrl: string
+    proxyAllowedHosts: string[]
   }
 
   export interface Config {
@@ -1580,6 +1656,10 @@ export namespace MdbService {
           .string()
           .default('')
           .description('Proxy URL for console.'),
+        proxyAllowedHosts: z
+          .array(z.string())
+          .default([])
+          .description('Hosts allowed by the internal proxy. Supports `*.example.com`.'),
       })
       .description('Console')
   })
