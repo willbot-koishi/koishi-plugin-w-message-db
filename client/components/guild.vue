@@ -33,17 +33,19 @@ const loadMessages = async (direction: 'before' | 'after') => {
   const messages = guildMessages.value
 
   let baseTimestamp = Date.now()
+  let baseId: string | undefined
   if (messages.length) {
-    if (direction === 'before') baseTimestamp = messages[0].timestamp
-    else baseTimestamp = messages.at(- 1).timestamp
+    const base = direction === 'before' ? messages[0] : messages.at(- 1)
+    baseTimestamp = base.timestamp
+    baseId = base.id
   }
 
   let messageSlice = await send('message-db/getMessages', {
     guildQuery,
     baseTimestamp,
+    baseId,
     direction,
     limit: 100,
-    page: 0,
   })
 
   messageLoadingState.value = 'idle'

@@ -140,6 +140,7 @@ export type GetMessageOption = {
   guildQuery: GuildQuery
   userQuery?: UserQuery
   baseTimestamp?: number
+  baseId?: string
   direction?: 'before' | 'after'
   limit?: number
   page?: number

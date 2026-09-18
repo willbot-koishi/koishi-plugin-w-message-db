@@ -919,25 +919,43 @@ export class MdbService extends Service {
     guildQuery,
     userQuery,
     baseTimestamp,
+    baseId,
     direction = 'before',
     limit = this.config.pageSize,
     page = 1,
   }: GetMessageOption) {
-    const durationQuery: DurationQuery = { timestamp: {} }
-    if (baseTimestamp) {
-      if (direction === 'before') durationQuery.timestamp.$lte = baseTimestamp
-      else durationQuery.timestamp.$gte = baseTimestamp
-    }
+    const cursorQuery: Query<SavedMessage> = baseTimestamp === undefined
+      ? {}
+      : baseId === undefined
+        ? {
+          timestamp: direction === 'before'
+            ? { $lt: baseTimestamp }
+            : { $gt: baseTimestamp },
+        }
+        : {
+          $or: [
+            {
+              timestamp: direction === 'before'
+                ? { $lt: baseTimestamp }
+                : { $gt: baseTimestamp },
+            },
+            {
+              timestamp: baseTimestamp,
+              id: direction === 'before' ? { $lt: baseId } : { $gt: baseId },
+            },
+          ],
+        }
     const messages = this.ctx.database
       .select('w-message')
       .where({
-        ...durationQuery,
+        ...cursorQuery,
         ...guildQuery,
         ...userQuery,
       })
       .orderBy('timestamp', direction === 'before' ? 'desc' : 'asc')
+      .orderBy('id', direction === 'before' ? 'desc' : 'asc')
       .limit(limit)
-      .offset(page * limit)
+      .offset(Math.max(0, page - 1) * limit)
       .execute()
 
     return messages
