@@ -51,7 +51,7 @@ import {
   migrateMessageTypes,
   migrateMessageV2,
 } from './model'
-import { getMessageTypeMask } from './query'
+import { createMessageFilterQuery, getMessageTypeMask } from './query'
 
 declare module 'koishi' {
   interface Context {
@@ -976,12 +976,15 @@ export class MdbService extends Service {
   async getMessages({
     guildQuery,
     userQuery,
+    filter,
     baseTimestamp,
     baseId,
     direction = 'before',
     limit = this.config.pageSize,
     page = 1,
   }: GetMessageOption) {
+    limit = Number.isSafeInteger(limit) ? Math.max(1, Math.min(limit, 200)) : this.config.pageSize
+    page = Number.isSafeInteger(page) ? Math.max(1, page) : 1
     const cursorQuery: Query<SavedMessage> = baseTimestamp === undefined
       ? {}
       : baseId === undefined
@@ -1003,20 +1006,22 @@ export class MdbService extends Service {
             },
           ],
         }
-    const messages = this.ctx.database
+    const messages = await this.ctx.database
       .select('w-message-v2')
-      .where({
-        ...cursorQuery,
-        ...guildQuery,
-        ...userQuery,
-      })
+      .where(guildQuery)
+      .where(cursorQuery)
+      .where(userQuery ?? {})
+      .where(createMessageFilterQuery(filter))
       .orderBy('timestamp', direction === 'before' ? 'desc' : 'asc')
       .orderBy('id', direction === 'before' ? 'desc' : 'asc')
-      .limit(limit)
+      .limit(limit + 1)
       .offset(Math.max(0, page - 1) * limit)
       .execute()
 
-    return messages
+    return {
+      data: messages.slice(0, limit),
+      hasMore: messages.length > limit,
+    }
   }
 
   async getGuildMembers({ guildQuery }: GetGuildMembersOption): Promise<GuildMember[]> {

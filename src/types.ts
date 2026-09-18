@@ -62,6 +62,15 @@ export interface SavedMessage extends LegacySavedMessage {
 
 export type MessageType = 'text' | 'image' | 'audio' | 'video' | 'file'
 
+export interface MessageFilter {
+  userIds?: string[]
+  startTime?: number
+  endTime?: number
+  keyword?: string
+  keywordMode?: 'plain' | 'regex'
+  types?: MessageType[]
+}
+
 export interface LegacySavedMessageWord extends TaggedWord, SavedMessageHeader {
   messageId: string
   index: number
@@ -157,11 +166,17 @@ export type MdbStatsTime = {
 export type GetMessageOption = {
   guildQuery: GuildQuery
   userQuery?: UserQuery
+  filter?: MessageFilter
   baseTimestamp?: number
   baseId?: string
   direction?: 'before' | 'after'
   limit?: number
   page?: number
+}
+
+export interface GetMessagesResult {
+  data: SavedMessage[]
+  hasMore: boolean
 }
 
 export type GetGuildMembersOption = {
