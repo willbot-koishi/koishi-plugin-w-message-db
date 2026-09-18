@@ -133,7 +133,7 @@ export type MdbStatsTime = {
     hour: number
     weekday: number
   }>
-  guild: SavedGuild
+  guild?: SavedGuild
 }
 
 export type GetMessageOption = {

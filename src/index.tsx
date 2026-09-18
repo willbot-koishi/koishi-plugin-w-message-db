@@ -186,10 +186,10 @@ export class MdbService extends Service {
       .option('withTime', '-t, --with-time', { fallback: false })
       .option('search', '-s <regexp:string>')
       .action(async ({ options, session }) => {
-        this.checkInGuild(session)
-        this.checkSaved(session)
-
-        const { platform, guildId } = session
+        const guildQuery = this.queryGuild(session, options)
+        if (! guildQuery)
+          throw new SessionError('message-db.error.guild-only')
+        this.checkSaved(guildQuery)
 
         const durationQuery = this.queryDuration(options.duration)
 
@@ -199,8 +199,7 @@ export class MdbService extends Service {
         })
 
         const query: Query<SavedMessage> = {
-          platform,
-          guildId,
+          ...guildQuery,
           ...userQuery,
           ...durationQuery,
           content: options.search
@@ -353,10 +352,11 @@ export class MdbService extends Service {
           const index = statsGuilds.findIndex(
             it => it.gid === `${session.platform}:${session.guildId}`
           )
-          const rank = index + 1
-          const count = statsGuilds[index].value
-          rankMessage = rank
-            ? session.text('.summary', { count, rank })
+          rankMessage = index >= 0
+            ? session.text('.summary', {
+              count: statsGuilds[index].value,
+              rank: index + 1,
+            })
             : session.text('.untracked')
         }
 
@@ -396,6 +396,8 @@ export class MdbService extends Service {
           validatePlatform: true,
         })
         const guildQuery = this.queryGuild(session, options)
+        if (! options.global && ! guildQuery)
+          throw new SessionError('message-db.error.guild-only')
         const durationQuery = this.queryDuration(options.duration)
 
         const [count, guildName] = await Promise.all([
@@ -407,10 +409,9 @@ export class MdbService extends Service {
               ...durationQuery,
             })
             .execute(row => $.count(row.id)),
-          options.global
-            ? undefined
-            : session.bot.getGuild(session.guildId)
-              .then(it => it.name)
+          guildQuery
+            ? this.savedGuildMap.get(getGid(guildQuery))?.name ?? getGid(guildQuery)
+            : undefined,
         ])
         const userName = session.username
 
@@ -818,10 +819,13 @@ export class MdbService extends Service {
     session: Session,
     options: { global?: boolean, guild?: string } = {},
   ): GuildQuery | undefined {
-    if (options.global || ! session.guildId) return undefined
-    if (! options.guild) return pick(session, ['platform', 'guildId'])
-    const [platform, guildId] = options.guild.split(':')
-    return { platform, guildId }
+    if (options.global) return undefined
+    if (options.guild) {
+      const [platform, guildId] = options.guild.split(':')
+      return { platform, guildId }
+    }
+    if (session.guildId)
+      return pick(session, ['platform', 'guildId'])
   }
 
   private queryDuration(durationStr = '~'): DurationQuery {
@@ -1130,7 +1134,9 @@ export class MdbService extends Service {
     const option: EChartsOption = {
       title: {
         text: statsOption.guildQuery
-          ? i18n.text('message-db.chart.title.time-guild', { name: data.guild.name })
+          ? i18n.text('message-db.chart.title.time-guild', {
+            name: data.guild?.name ?? getGid(statsOption.guildQuery),
+          })
           : i18n.text('message-db.chart.title.time-global'),
         left: 'center',
         top: '5%',
@@ -1148,7 +1154,7 @@ export class MdbService extends Service {
       },
       visualMap: {
         min: 0,
-        max: maxBy(data.timeData, it => it.count),
+        max: data.timeData.length ? maxBy(data.timeData, it => it.count) : 0,
         calculable: true,
         show: ! isStatic,
         orient: 'horizontal',
