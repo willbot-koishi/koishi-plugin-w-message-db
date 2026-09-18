@@ -3,8 +3,8 @@ import type { DataService } from '@koishijs/plugin-console'
 import type { EChartsOption } from 'echarts'
 import type { Tag, Tag as TaggedWord } from 'koishi-plugin-w-jieba'
 
-import { MdbService } from '.'
-import { Duration } from '../shared/utils'
+import type { MdbService } from '.'
+import type { Duration } from '../shared/utils'
 
 export type { MdbService }
 
@@ -46,7 +46,7 @@ export interface SavedMessageHeader {
   timestamp: number
 }
 
-export interface SavedMessage extends SavedMessageHeader {
+export interface LegacySavedMessage extends SavedMessageHeader {
   id: string
   username: string
   content: string
@@ -54,9 +54,23 @@ export interface SavedMessage extends SavedMessageHeader {
   segmented: boolean
 }
 
-export interface SavedMessageWord extends TaggedWord, SavedMessageHeader {
+export interface SavedMessage extends LegacySavedMessage {
+  key: string
+}
+
+export interface LegacySavedMessageWord extends TaggedWord, SavedMessageHeader {
   messageId: string
   index: number
+}
+
+export interface SavedMessageWord extends TaggedWord, SavedMessageHeader {
+  messageKey: string
+  index: number
+}
+
+export interface MessageMigration {
+  id: string
+  completedAt: Date
 }
 
 export interface GuildQuery {

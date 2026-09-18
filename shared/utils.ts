@@ -1,7 +1,7 @@
 import { SessionError } from 'koishi'
 
 import dayjs from 'dayjs'
-import { GuildQuery } from '../src/types'
+import type { GuildQuery } from '../src/types'
 
 export const stripUndefined = <T extends object>(obj: T): T => {
   for (const key in obj)
@@ -95,6 +95,12 @@ export const parseDuration = (durationStr: string = ''): Duration => {
 
 export const getGid = ({ platform, guildId }: GuildQuery) =>
   `${platform}:${guildId}`
+
+export const createMessageKey = ({ platform, guildId, id }: {
+  platform: string
+  guildId: string
+  id: string
+}) => JSON.stringify([platform, guildId, id])
 
 export const applyA = <P extends [], T>(fnArr: ((...params: P) => T)[]) =>
   (...params: P): T[] => fnArr.map(fn => fn(...params))

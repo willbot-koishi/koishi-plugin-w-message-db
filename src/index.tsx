@@ -26,7 +26,7 @@ import type { EChartsOption } from 'echarts'
 
 import {
   divide, formatSize, mapFrom, maxBy, stripUndefined, sumBy,
-  parseDuration, getGid,
+  parseDuration, getGid, createMessageKey,
 } from '../shared/utils'
 import {
   FetchHistoryOptions, FetchHistoryResult, FetchHistoryGuildResult,
@@ -46,14 +46,12 @@ import {
   MdbStatsGuildsOption,
   SavedMessageWord,
 } from './types'
+import {
+  extendMessageModels,
+  migrateMessageV2,
+} from './model'
 
 declare module 'koishi' {
-  interface Tables {
-    'w-message': SavedMessage
-    'w-message-word': SavedMessageWord
-    'w-message-guild': SavedGuild
-  }
-
   interface Context {
     messageDb: MdbService
   }
@@ -93,47 +91,7 @@ export class MdbService extends Service {
       this.ctx.i18n.define(locale, require(`../locales/${locale}.yml`))
     })
 
-    // Define message table.
-    ctx.model.extend('w-message', {
-      id: 'string',
-      platform: 'string',
-      guildId: 'string',
-      userId: 'string',
-      username: 'string',
-      content: 'text',
-      timestamp: 'unsigned(8)',
-      segmented: 'boolean',
-      quoteId: 'string',
-    }, {
-      primary: 'id',
-      indexes: [
-        ['timestamp'],
-        ['platform', 'guildId']
-      ]
-    })
-
-    ctx.model.extend('w-message-word', {
-      messageId: 'string',
-      platform: 'string',
-      guildId: 'string',
-      userId: 'string',
-      timestamp: 'unsigned(8)',
-      index: 'unsigned',
-      word: 'string',
-      tag: 'string',
-    }, {
-      primary: ['messageId', 'index'],
-    })
-
-    ctx.model.extend('w-message-guild', {
-      platform: 'string',
-      guildId: 'string',
-      name: 'string',
-      managerBotId: 'string',
-      isTracked: 'boolean',
-    }, {
-      primary: ['platform', 'guildId'],
-    })
+    extendMessageModels(ctx)
 
     // Extend console.
     ctx.console.addEntry({
@@ -273,14 +231,15 @@ export class MdbService extends Service {
 
         const [messages, messageTotal] = await Promise.all([
           ctx.database
-            .select('w-message')
+            .select('w-message-v2')
             .where(query)
             .orderBy('timestamp', 'desc')
+            .orderBy('id', 'desc')
             .offset((options.page - 1) * config.pageSize)
             .limit(config.pageSize)
             .execute(),
           ctx.database
-            .select('w-message')
+            .select('w-message-v2')
             .where(query)
             .execute(row => $.count(row.id))
         ])
@@ -466,7 +425,7 @@ export class MdbService extends Service {
 
         const [count, guildName] = await Promise.all([
           this.ctx.database
-            .select('w-message')
+            .select('w-message-v2')
             .where({
               ...userQuery,
               ...guildQuery,
@@ -579,7 +538,7 @@ export class MdbService extends Service {
           const [
             { segmentedCount, totalCount } = { segmentedCount: 0, totalCount: 0 }
           ] = await ctx.database
-            .select('w-message')
+            .select('w-message-v2')
             .where({
               ...guildQuery,
               ...durationQuery,
@@ -608,14 +567,14 @@ export class MdbService extends Service {
             ctx.logger.info(`batch ${batchIndex}: select, index: ${messageIndex}, ${progress}`)
 
             const messages = await ctx.database
-              .select('w-message')
+              .select('w-message-v2')
               .where({
                 ...guildQuery,
                 ...durationQuery,
                 segmented: false,
               })
               .project({
-                messageId: row => row.id,
+                messageKey: row => row.key,
                 content: row => row.content,
                 platform: row => row.platform,
                 guildId: row => row.guildId,
@@ -627,7 +586,7 @@ export class MdbService extends Service {
 
             if (! messages.length) break
 
-            ctx.logger.info(`batch ${batchIndex}: segment, first id: ${messages[0].messageId}`)
+            ctx.logger.info(`batch ${batchIndex}: segment, first key: ${messages[0].messageKey}`)
 
             const words: SavedMessageWord[] = []
             for (const { content, ...message } of messages) {
@@ -645,12 +604,12 @@ export class MdbService extends Service {
             }
 
             ctx.logger.info(`batch ${batchIndex}: upsert words, count: ${words.length}`)
-            await ctx.database.upsert('w-message-word', words)
+            await ctx.database.upsert('w-message-word-v2', words)
             // Mark a message only after all derived rows are durable. If either
             // write fails, the next run can safely upsert the same word rows.
             ctx.logger.info(`batch ${batchIndex}: upsert messages`)
-            await ctx.database.upsert('w-message', messages.map(message => ({
-              id: message.messageId,
+            await ctx.database.upsert('w-message-v2', messages.map(message => ({
+              key: message.messageKey,
               segmented: true,
             })))
 
@@ -688,7 +647,7 @@ export class MdbService extends Service {
         console.log('start')
 
         const words = await this.ctx.database
-          .select('w-message-word')
+          .select('w-message-word-v2')
           .where({
             ...guildQuery,
             ...userQuery,
@@ -756,6 +715,15 @@ export class MdbService extends Service {
   }
 
   async start() {
+    const migration = await migrateMessageV2(this.ctx)
+    if (! migration.skipped) {
+      this.logger.info(
+        'migrated %d messages and %d word records to v2',
+        migration.messages,
+        migration.words,
+      )
+    }
+
     // Load saved guilds from database.
     this.savedGuildMap = await this.ctx.database
       .get('w-message-guild', {})
@@ -1021,7 +989,7 @@ export class MdbService extends Service {
           ],
         }
     const messages = this.ctx.database
-      .select('w-message')
+      .select('w-message-v2')
       .where({
         ...cursorQuery,
         ...guildQuery,
@@ -1044,14 +1012,14 @@ export class MdbService extends Service {
   async stats(): Promise<MdbStats> {
     const [messageCount, dbStats] = await Promise.all([
       this.ctx.database
-        .select('w-message')
+        .select('w-message-v2')
         .execute(row => $.count(row.id)),
       this.ctx.database.stats(),
     ])
     const guildCount = this.savedGuildMap.size
     const trackedGuildCount = this.trackedGuilds.length
     const tablesStats = dbStats.tables as Record<keyof Tables, Driver.TableStats>
-    const tableSize = tablesStats['w-message'].size
+    const tableSize = tablesStats['w-message-v2'].size
 
     return {
       messageCount,
@@ -1066,7 +1034,7 @@ export class MdbService extends Service {
   }: MdbStatsGuildsOption): Promise<MdbStatsGuilds> {
     const [data, guildLists] = await Promise.all([
       this.ctx.database
-        .select('w-message')
+        .select('w-message-v2')
         .where({
           ...durationQuery,
         })
@@ -1131,7 +1099,7 @@ export class MdbService extends Service {
 
     const [data, memberList] = await Promise.all([
       this.ctx.database
-        .select('w-message')
+        .select('w-message-v2')
         .where({
           ...guildQuery,
           ...durationQuery,
@@ -1187,7 +1155,7 @@ export class MdbService extends Service {
 
     const [timeData, guild] = await Promise.all([
       this.ctx.database
-        .select('w-message')
+        .select('w-message-v2')
         .where({
           ...guildQuery,
           ...userQuery,
@@ -1292,7 +1260,7 @@ export class MdbService extends Service {
     const { olderThan, untrackedOnly } = this.config.gc
     const minTime = Date.now() - olderThan * 24 * 60 * 60 * 1000
 
-    const messageResult = await this.ctx.database.remove('w-message', row => $.and(
+    const messageResult = await this.ctx.database.remove('w-message-v2', row => $.and(
       $.lt(row.timestamp, minTime),
       untrackedOnly
         ? $.not(
@@ -1305,7 +1273,7 @@ export class MdbService extends Service {
     ))
     // Word rows duplicate the message timestamp and guild identity, so they
     // can be collected even if a previous run removed only the parent rows.
-    const wordResult = await this.ctx.database.remove('w-message-word', row => $.and(
+    const wordResult = await this.ctx.database.remove('w-message-word-v2', row => $.and(
       $.lt(row.timestamp, minTime),
       untrackedOnly
         ? $.not(
@@ -1358,7 +1326,7 @@ export class MdbService extends Service {
     // we can use the last message ID before the time as the start token.
     if (bot.platform === 'onebot' && (bot.internal as NapCatBot<Context>).isNapCat) {
       const [message] = await this.ctx.database
-        .select('w-message')
+        .select('w-message-v2')
         .where({
           platform: bot.platform,
           guildId,
@@ -1417,6 +1385,7 @@ export class MdbService extends Service {
     }
     // Insert the message into the database.
     const message: SavedMessage = {
+      key: createMessageKey({ platform, guildId, id: messageId }),
       id: messageId,
       platform,
       guildId,
@@ -1428,7 +1397,7 @@ export class MdbService extends Service {
       segmented: false,
     }
 
-    const { inserted } = await this.ctx.database.upsert('w-message', [message])
+    const { inserted } = await this.ctx.database.upsert('w-message-v2', [message])
 
     // Emit message event.
     // TODO: Multi-instance broadcast.
@@ -1498,7 +1467,8 @@ export class MdbService extends Service {
 
             // Construct the `TrackedMessage` object.
             const { id } = msg
-            const message = ({
+            const message: SavedMessage = ({
+              key: createMessageKey({ platform, guildId, id }),
               id,
               platform,
               guildId,
@@ -1511,7 +1481,7 @@ export class MdbService extends Service {
             })
 
             // Try to insert it into the database.
-            const { inserted: insertedIt } = await this.ctx.database.upsert('w-message', [message])
+            const { inserted: insertedIt } = await this.ctx.database.upsert('w-message-v2', [message])
             inserted += insertedIt
 
             // The fetching is done if

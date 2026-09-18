@@ -11,7 +11,7 @@ import {
 import html2canvas from 'html2canvas'
 import WMessage from './message.vue'
 import { useMessageStore } from '../stores/message'
-import { findMinBy, minBy, sortPair } from '../../shared/utils'
+import { createMessageKey, findMinBy, minBy, sortPair } from '../../shared/utils'
 
 const props = defineProps<{
   gid: string
@@ -22,12 +22,14 @@ const { messageMap } = useMessageStore()
 
 const guildMessages = storeWrappedReactive<SavedMessage[]>(() => `message-db/guildMessages/${props.gid}`, [])
 for (const message of guildMessages.value) {
-  messageMap.set(message.id, message)
+  // Cached v1 messages predate the composite key.
+  message.key ??= createMessageKey(message)
+  messageMap.set(message.key, message)
 }
 
 const clearMessages = () => {
   for (const message of guildMessages.value) {
-    messageMap.delete(message.id)
+    messageMap.delete(message.key)
   }
   guildMessages.value.length = 0
 }
@@ -72,26 +74,26 @@ const loadMessages = async (direction: 'before' | 'after') => {
   }
 
   messageSlice = messageSlice.filter(message => {
-    if (messageMap.has(message.id)) return false
-    messageMap.set(message.id, message)
+    if (messageMap.has(message.key)) return false
+    messageMap.set(message.key, message)
     return true
   })
   if (! messageSlice.length) return
 
   if (direction === 'before') {
     messages.unshift(...messageSlice.reverse())
-    nextTick(() => scrollToMessage(messageSlice.at(- 1).id))
+    nextTick(() => scrollToMessage(messageSlice.at(- 1).key))
   }
   else {
     messages.push(...messageSlice)
-    nextTick(() => scrollToMessage(messageSlice[0].id))
+    nextTick(() => scrollToMessage(messageSlice[0].key))
   }
 }
 
 const messagesEl = useTemplateRef('messages')
 
-const scrollToMessage = (messageId: string) => {
-  const el = messagesEl.value?.querySelector(`[data-id="${messageId}"]`)
+const scrollToMessage = (messageKey: string) => {
+  const el = messagesEl.value?.querySelector(`[data-key="${CSS.escape(messageKey)}"]`)
   if (! el) return
   el.scrollIntoView({
     behavior: 'smooth',
@@ -100,21 +102,21 @@ const scrollToMessage = (messageId: string) => {
 }
 
 const isSelecting = ref(false)
-const selectedMessageIds = ref<string[]>([])
-const selectedMessageIdSet = computed(() => new Set(selectedMessageIds.value))
+const selectedMessageKeys = ref<string[]>([])
+const selectedMessageKeySet = computed(() => new Set(selectedMessageKeys.value))
 
 const onMessageClick = (event: MouseEvent, baseIndex: number) => {
   if (! event.shiftKey) return
-  if (! selectedMessageIds.value.length) return
+  if (! selectedMessageKeys.value.length) return
 
   event.preventDefault()
   event.stopPropagation()
 
   const messages = guildMessages.value
-  const messageIndexMap = new Map(messages.map((message, index) => [ message.id, index ]))
+  const messageIndexMap = new Map(messages.map((message, index) => [ message.key, index ]))
   const { index: nearestIndex } = findMinBy(
-    selectedMessageIds.value.map(id => {
-      const index = messageIndexMap.get(id)
+    selectedMessageKeys.value.map(key => {
+      const index = messageIndexMap.get(key)
       return { index, delta: Math.abs(index - baseIndex) }
     }),
     ({ delta }) => delta,
@@ -122,16 +124,16 @@ const onMessageClick = (event: MouseEvent, baseIndex: number) => {
   let [ startIndex, endIndex ] = sortPair(nearestIndex, baseIndex)
   while (startIndex <= endIndex) {
     const message = messages[startIndex]
-    selectedMessageIdSet.value.add(message.id)
+    selectedMessageKeySet.value.add(message.key)
     startIndex ++
   }
 
-  selectedMessageIds.value = [ ...selectedMessageIdSet.value.values() ]
+  selectedMessageKeys.value = [ ...selectedMessageKeySet.value.values() ]
 }
 
 watch(isSelecting, (value) => {
   if (! value) {
-    selectedMessageIds.value.length = 0
+    selectedMessageKeys.value.length = 0
     imageExportingState.value = 'idle'
   }
 })
@@ -142,7 +144,7 @@ const imageExportingState = ref<'idle' | 'previewing' | 'exporting'>('idle')
 
 const exportToImage = async () => {
   if (! messagesEl.value) return
-  if (! selectedMessageIds.value.length) return
+  if (! selectedMessageKeys.value.length) return
   if (imageExportingState.value !== 'previewing') return
   imageExportingState.value = 'exporting'
 
@@ -174,7 +176,7 @@ const isActivated = ref(false)
 onActivated(() => {
   isActivated.value = true
   nextTick(() => {
-    scrollToMessage(guildMessages.value.at(- 1)?.id)  
+    scrollToMessage(guildMessages.value.at(- 1)?.key)
   })
 })
 
@@ -196,17 +198,17 @@ onBeforeUnmount(() => {
       <template v-if="isSelecting">
         <span>
           {{ imageExportingState === 'previewing' ? '将要导出' : '已选' }}
-          {{ selectedMessageIds.length }} 条消息
+          {{ selectedMessageKeys.length }} 条消息
         </span>
         <el-button
           v-if="imageExportingState === 'idle'"
           @click="imageExportingState = 'previewing'"
-          :disabled="! selectedMessageIds.length"
+          :disabled="! selectedMessageKeys.length"
         >导出图片</el-button>
         <template v-else-if="imageExportingState === 'previewing'">
           <el-button
             @click="exportToImage"
-            :disabled="! selectedMessageIds.length"
+            :disabled="! selectedMessageKeys.length"
           >开始导出</el-button>
           <el-button
             @click="imageExportingState = 'idle'"
@@ -233,20 +235,20 @@ onBeforeUnmount(() => {
       <template v-if="messageLoadingState === 'loading'">加载中</template>
       <el-button v-else @click="loadMessages('before')">加载更旧</el-button>
     </el-divider>
-    <el-checkbox-group v-model="selectedMessageIds">
+    <el-checkbox-group v-model="selectedMessageKeys">
       <template
         v-for="message, index of guildMessages.value"
-        :key="message.id"
+        :key="message.key"
       >
         <label
-          v-if="imageExportingState === 'idle' || selectedMessageIdSet.has(message.id)"
-          :data-id="message.id"
+          v-if="imageExportingState === 'idle' || selectedMessageKeySet.has(message.key)"
+          :data-key="message.key"
           class="message-wrapper"
           @click.capture="event => onMessageClick(event, index)"
         >
           <el-checkbox
             v-if="isSelecting && imageExportingState === 'idle'"
-            :value="message.id"
+            :value="message.key"
             class="message-selector"
           />
           <w-message :message="message" :show-time="showTime" />
