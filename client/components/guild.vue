@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { send, store } from '@koishijs/client'
 
-import { MdbRemoteError, SavedMessage } from '../../src/types'
+import { GetMessagesResult, MdbRemoteError, SavedMessage } from '../../src/types'
 import { storeWrappedReactive } from '../utils/storage'
 
 import {
@@ -21,17 +21,23 @@ const props = defineProps<{
 const { messageMap } = useMessageStore()
 
 const guildMessages = storeWrappedReactive<SavedMessage[]>(() => `message-db/guildMessages/${props.gid}`, [])
+const loadedMessageKeys = new Set<string>()
 for (const message of guildMessages.value) {
   // Cached v1 messages predate the composite key.
   message.key ??= createMessageKey(message)
   messageMap.set(message.key, message)
+  loadedMessageKeys.add(message.key)
 }
+
+const hasMore = ref({ before: true, after: true })
 
 const clearMessages = () => {
   for (const message of guildMessages.value) {
     messageMap.delete(message.key)
   }
   guildMessages.value.length = 0
+  loadedMessageKeys.clear()
+  hasMore.value = { before: true, after: true }
 }
 
 type MessageLoadingState = 'idle' | 'loading'
@@ -47,7 +53,7 @@ const loadMessages = async (direction: 'before' | 'after') => {
 
   const messages = guildMessages.value
 
-  let baseTimestamp = Date.now()
+  let baseTimestamp = Date.now() + 1
   let baseId: string | undefined
   if (messages.length) {
     const base = direction === 'before' ? messages[0] : messages.at(- 1)
@@ -55,9 +61,9 @@ const loadMessages = async (direction: 'before' | 'after') => {
     baseId = base.id
   }
 
-  let messageSlice: SavedMessage[] | MdbRemoteError
+  let result: GetMessagesResult | MdbRemoteError
   try {
-    messageSlice = await send('message-db/getMessages', {
+    result = await send('message-db/getMessages', {
       guildQuery,
       baseTimestamp,
       baseId,
@@ -69,12 +75,14 @@ const loadMessages = async (direction: 'before' | 'after') => {
     messageLoadingState.value = 'idle'
   }
 
-  if ('error' in messageSlice) {
+  if ('error' in result) {
     return
   }
+  hasMore.value[direction] = result.hasMore
 
-  messageSlice = messageSlice.filter(message => {
-    if (messageMap.has(message.key)) return false
+  const messageSlice = result.data.filter(message => {
+    if (loadedMessageKeys.has(message.key)) return false
+    loadedMessageKeys.add(message.key)
     messageMap.set(message.key, message)
     return true
   })
@@ -233,7 +241,11 @@ onBeforeUnmount(() => {
       class="load-button"
     >
       <template v-if="messageLoadingState === 'loading'">加载中</template>
-      <el-button v-else @click="loadMessages('before')">加载更旧</el-button>
+      <el-button
+        v-else
+        @click="loadMessages('before')"
+        :disabled="! hasMore.before"
+      >{{ hasMore.before ? '加载更旧' : '没有更旧的消息' }}</el-button>
     </el-divider>
     <el-checkbox-group v-model="selectedMessageKeys">
       <template
@@ -260,7 +272,11 @@ onBeforeUnmount(() => {
       class="load-button"
     >
       <template v-if="messageLoadingState === 'loading'">加载中</template>
-      <el-button v-else @click="loadMessages('after')">加载更新</el-button>
+      <el-button
+        v-else
+        @click="loadMessages('after')"
+        :disabled="! hasMore.after"
+      >{{ hasMore.after ? '加载更新' : '没有更新的消息' }}</el-button>
     </el-divider>
   </div>
 </template>
