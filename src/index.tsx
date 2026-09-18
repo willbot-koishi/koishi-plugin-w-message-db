@@ -607,11 +607,12 @@ export class MdbService extends Service {
             await ctx.database.upsert('w-message-word-v2', words)
             // Mark a message only after all derived rows are durable. If either
             // write fails, the next run can safely upsert the same word rows.
-            ctx.logger.info(`batch ${batchIndex}: upsert messages`)
-            await ctx.database.upsert('w-message-v2', messages.map(message => ({
-              key: message.messageKey,
+            ctx.logger.info(`batch ${batchIndex}: mark messages`)
+            await ctx.database.set('w-message-v2', {
+              key: { $in: messages.map(message => message.messageKey) },
+            }, {
               segmented: true,
-            })))
+            })
 
             messageIndex += messages.length
             batchIndex ++
