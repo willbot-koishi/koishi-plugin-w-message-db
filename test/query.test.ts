@@ -40,6 +40,8 @@ describe('message filters', () => {
     assert.equal(matches(createMessage({ timestamp: 200 }), {
       endTime: 150,
     }), false)
+    assert.equal(matches(createMessage(), { endTime: 150 }), true)
+    assert.equal(matches(createMessage(), { startTime: 50 }), true)
   })
 
   it('escapes plain keywords and accepts regular expressions', () => {

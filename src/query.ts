@@ -49,10 +49,9 @@ export function createMessageFilterQuery(filter: MessageFilter = {}): Query<Save
       filter.endTime !== undefined &&
       filter.startTime > filter.endTime
     ) throw new RangeError('message filter ends before it starts')
-    query.timestamp = {
-      $gte: filter.startTime,
-      $lte: filter.endTime,
-    }
+    query.timestamp = {}
+    if (filter.startTime !== undefined) query.timestamp.$gte = filter.startTime
+    if (filter.endTime !== undefined) query.timestamp.$lte = filter.endTime
   }
 
   const keyword = filter.keyword?.trim()
