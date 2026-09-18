@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { send, store } from '@koishijs/client'
 
-import { GetMessagesResult, MdbRemoteError, SavedMessage } from '../../src/types'
+import {
+  GetMessagesResult, MdbRemoteError, MessageFilter, MessageType, SavedMessage,
+} from '../../src/types'
 import { storeWrappedReactive } from '../utils/storage'
 
 import {
-  useTemplateRef, ref, watch, nextTick,
+  useTemplateRef, ref, reactive, watch, nextTick,
   onBeforeUnmount, onActivated, onDeactivated, computed,
 } from 'vue'
 import html2canvas from 'html2canvas'
@@ -18,11 +20,60 @@ const props = defineProps<{
   toolbarEl: HTMLElement
 }>()
 
-const { messageMap } = useMessageStore()
+const { messageMap, guildMembers } = useMessageStore()
 
-const guildMessages = storeWrappedReactive<SavedMessage[]>(() => `message-db/guildMessages/${props.gid}`, [])
+type TimeValue = Date | number | string
+interface FilterDraft {
+  userIds: string[]
+  timeRange: TimeValue[] | null
+  keyword: string
+  keywordMode: 'plain' | 'regex'
+  types: MessageType[]
+}
+
+const createFilterDraft = (): FilterDraft => ({
+  userIds: [],
+  timeRange: [],
+  keyword: '',
+  keywordMode: 'plain',
+  types: [],
+})
+
+const filterDraft = reactive(createFilterDraft())
+const activeFilter = ref<MessageFilter>({})
+const filterError = ref('')
+const isFilterPanelVisible = ref(false)
+const isFilterActive = computed(() => Object.keys(activeFilter.value).length > 0)
+const activeFilterCount = computed(() => [
+  activeFilter.value.userIds?.length,
+  activeFilter.value.startTime !== undefined || activeFilter.value.endTime !== undefined,
+  activeFilter.value.keyword,
+  activeFilter.value.types?.length,
+].filter(Boolean).length)
+
+const memberOptions = computed(() => Object
+  .values(guildMembers[props.gid] ?? {})
+  .map(member => ({
+    id: member.user.id,
+    name: member.nick || member.user.name || member.user.id,
+  }))
+  .sort((a, b) => a.name.localeCompare(b.name)))
+
+const MESSAGE_TYPE_OPTIONS: Array<{ value: MessageType, label: string }> = [
+  { value: 'text', label: '文本' },
+  { value: 'image', label: '图片' },
+  { value: 'audio', label: '音频' },
+  { value: 'video', label: '视频' },
+  { value: 'file', label: '文件' },
+]
+
+const cachedGuildMessages = storeWrappedReactive<SavedMessage[]>(() => `message-db/guildMessages/${props.gid}`, [])
+const filteredMessages = ref<SavedMessage[]>([])
+const guildMessages = computed(() => isFilterActive.value
+  ? filteredMessages.value
+  : cachedGuildMessages.value)
 const loadedMessageKeys = new Set<string>()
-for (const message of guildMessages.value) {
+for (const message of cachedGuildMessages.value) {
   // Cached v1 messages predate the composite key.
   message.key ??= createMessageKey(message)
   messageMap.set(message.key, message)
@@ -30,11 +81,13 @@ for (const message of guildMessages.value) {
 }
 
 const hasMore = ref({ before: true, after: true })
+let queryVersion = 0
+let activeRequestId = 0
 
 const clearMessages = () => {
-  for (const message of guildMessages.value) {
-    messageMap.delete(message.key)
-  }
+  queryVersion ++
+  activeRequestId ++
+  messageLoadingState.value = 'idle'
   guildMessages.value.length = 0
   loadedMessageKeys.clear()
   hasMore.value = { before: true, after: true }
@@ -43,9 +96,76 @@ const clearMessages = () => {
 type MessageLoadingState = 'idle' | 'loading'
 const messageLoadingState = ref<MessageLoadingState>('idle')
 
+const getTimestamp = (value: TimeValue) => value instanceof Date
+  ? value.getTime()
+  : Number(value)
+
+const normalizeFilter = (): MessageFilter | null => {
+  const keyword = filterDraft.keyword.trim()
+  if (keyword && filterDraft.keywordMode === 'regex') {
+    try {
+      new RegExp(keyword)
+    }
+    catch {
+      filterError.value = '正则表达式无效。'
+      return null
+    }
+  }
+
+  filterError.value = ''
+  const filter: MessageFilter = {}
+  if (filterDraft.userIds.length)
+    filter.userIds = [...new Set(filterDraft.userIds)].sort()
+  if (filterDraft.timeRange?.length === 2) {
+    filter.startTime = getTimestamp(filterDraft.timeRange[0])
+    filter.endTime = getTimestamp(filterDraft.timeRange[1])
+  }
+  if (keyword) {
+    filter.keyword = keyword
+    filter.keywordMode = filterDraft.keywordMode
+  }
+  if (filterDraft.types.length)
+    filter.types = [...new Set(filterDraft.types)].sort()
+  return filter
+}
+
+const rebuildLoadedMessageKeys = () => {
+  loadedMessageKeys.clear()
+  for (const message of guildMessages.value) loadedMessageKeys.add(message.key)
+}
+
+const applyFilter = () => {
+  const filter = normalizeFilter()
+  if (! filter) return
+  if (JSON.stringify(filter) === JSON.stringify(activeFilter.value)) {
+    isFilterPanelVisible.value = false
+    return
+  }
+
+  queryVersion ++
+  activeRequestId ++
+  messageLoadingState.value = 'idle'
+  activeFilter.value = filter
+  if (isFilterActive.value) filteredMessages.value = []
+  rebuildLoadedMessageKeys()
+  hasMore.value = { before: true, after: true }
+  isFilterPanelVisible.value = false
+  if (isFilterActive.value) void loadMessages('before')
+}
+
+const resetFilter = () => {
+  Object.assign(filterDraft, createFilterDraft())
+  applyFilter()
+}
+
 const loadMessages = async (direction: 'before' | 'after') => {
   const { gid } = props
-  if (messageLoadingState.value === 'loading') return
+  if (
+    messageLoadingState.value === 'loading' ||
+    direction === 'before' && ! hasMore.value.before
+  ) return
+  const version = queryVersion
+  const requestId = ++ activeRequestId
   messageLoadingState.value = 'loading'
 
   const [ platform, guildId ] = gid.split(':')
@@ -53,7 +173,10 @@ const loadMessages = async (direction: 'before' | 'after') => {
 
   const messages = guildMessages.value
 
-  let baseTimestamp = Date.now() + 1
+  let baseTimestamp = Math.min(
+    Date.now(),
+    activeFilter.value.endTime ?? Date.now(),
+  ) + 1
   let baseId: string | undefined
   if (messages.length) {
     const base = direction === 'before' ? messages[0] : messages.at(- 1)
@@ -65,6 +188,7 @@ const loadMessages = async (direction: 'before' | 'after') => {
   try {
     result = await send('message-db/getMessages', {
       guildQuery,
+      filter: activeFilter.value,
       baseTimestamp,
       baseId,
       direction,
@@ -72,9 +196,11 @@ const loadMessages = async (direction: 'before' | 'after') => {
     })
   }
   finally {
-    messageLoadingState.value = 'idle'
+    if (requestId === activeRequestId)
+      messageLoadingState.value = 'idle'
   }
 
+  if (version !== queryVersion) return
   if ('error' in result) {
     return
   }
@@ -193,13 +319,84 @@ onDeactivated(() => {
 })
 
 onBeforeUnmount(() => {
-  guildMessages[Symbol.dispose]()
+  cachedGuildMessages[Symbol.dispose]()
 })
 </script>
 
 <template>
   <Teleport v-if="isActivated" :to="toolbarEl">
     <div class="toolbar-select group">
+      <el-popover
+        v-model:visible="isFilterPanelVisible"
+        placement="bottom-start"
+        :width="420"
+        trigger="click"
+      >
+        <template #reference>
+          <el-button :type="isFilterActive ? 'primary' : 'default'">
+            筛选{{ activeFilterCount ? ` (${activeFilterCount})` : '' }}
+          </el-button>
+        </template>
+        <div class="filter-panel">
+          <label>
+            <span>成员</span>
+            <el-select
+              v-model="filterDraft.userIds"
+              multiple
+              filterable
+              clearable
+              collapse-tags
+              placeholder="全部成员"
+            >
+              <el-option
+                v-for="member of memberOptions"
+                :key="member.id"
+                :value="member.id"
+                :label="member.name"
+              />
+            </el-select>
+          </label>
+          <label>
+            <span>时间范围</span>
+            <el-date-picker
+              v-model="filterDraft.timeRange"
+              type="datetimerange"
+              start-placeholder="开始时间"
+              end-placeholder="结束时间"
+              range-separator="至"
+              clearable
+            />
+          </label>
+          <label>
+            <span>内容</span>
+            <el-input
+              v-model="filterDraft.keyword"
+              clearable
+              maxlength="256"
+              placeholder="输入关键词或正则表达式"
+            />
+          </label>
+          <el-radio-group v-model="filterDraft.keywordMode" size="small">
+            <el-radio-button value="plain">普通包含</el-radio-button>
+            <el-radio-button value="regex">正则表达式</el-radio-button>
+          </el-radio-group>
+          <label>
+            <span>消息类型</span>
+            <el-checkbox-group v-model="filterDraft.types" class="filter-types">
+              <el-checkbox
+                v-for="type of MESSAGE_TYPE_OPTIONS"
+                :key="type.value"
+                :value="type.value"
+              >{{ type.label }}</el-checkbox>
+            </el-checkbox-group>
+          </label>
+          <span v-if="filterError" class="filter-error">{{ filterError }}</span>
+          <div class="filter-actions">
+            <el-button @click="resetFilter">重置</el-button>
+            <el-button type="primary" @click="applyFilter">应用</el-button>
+          </div>
+        </div>
+      </el-popover>
       <el-checkbox v-model="showTime" border>显示时间</el-checkbox>
       <el-button @click="clearMessages">清空</el-button>
       <el-checkbox v-model="isSelecting" border>多选</el-checkbox>
@@ -275,8 +472,7 @@ onBeforeUnmount(() => {
       <el-button
         v-else
         @click="loadMessages('after')"
-        :disabled="! hasMore.after"
-      >{{ hasMore.after ? '加载更新' : '没有更新的消息' }}</el-button>
+      >{{ hasMore.after ? '加载更新' : '检查更新' }}</el-button>
     </el-divider>
   </div>
 </template>
@@ -284,6 +480,40 @@ onBeforeUnmount(() => {
 <style scoped>
 .toolbar-select span {
   text-wrap: nowrap;
+}
+
+.filter-panel {
+  display: flex;
+  flex-direction: column;
+  gap: .75rem;
+}
+
+.filter-panel > label {
+  display: grid;
+  grid-template-columns: 4.5rem minmax(0, 1fr);
+  align-items: center;
+  gap: .75rem;
+}
+
+.filter-panel :deep(.el-date-editor),
+.filter-panel :deep(.el-select) {
+  width: 100%;
+}
+
+.filter-types {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 .75rem;
+}
+
+.filter-error {
+  color: var(--k-color-danger, #f56c6c);
+}
+
+.filter-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: .5rem;
 }
 
 .messages.selecting:not(.exporting) .message-wrapper:hover {
