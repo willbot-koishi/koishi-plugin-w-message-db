@@ -48,8 +48,10 @@ import {
 } from './types'
 import {
   extendMessageModels,
+  migrateMessageTypes,
   migrateMessageV2,
 } from './model'
+import { getMessageTypeMask } from './query'
 
 declare module 'koishi' {
   interface Context {
@@ -721,6 +723,10 @@ export class MdbService extends Service {
         migration.messages,
         migration.words,
       )
+    }
+    const typeMigration = await migrateMessageTypes(this.ctx)
+    if (! typeMigration.skipped) {
+      this.logger.info('indexed message types for %d messages', typeMigration.messages)
     }
 
     // Load saved guilds from database.
@@ -1404,6 +1410,7 @@ export class MdbService extends Service {
       timestamp,
       quoteId: quote?.id,
       segmented: false,
+      messageTypeMask: getMessageTypeMask(content),
     }
 
     const { inserted } = await this.ctx.database.upsert('w-message-v2', [message])
@@ -1487,6 +1494,7 @@ export class MdbService extends Service {
               timestamp,
               quoteId: msg.quote?.id,
               segmented: false,
+              messageTypeMask: getMessageTypeMask(content),
             })
 
             // Try to insert it into the database.

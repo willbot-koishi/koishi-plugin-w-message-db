@@ -8,8 +8,11 @@ import { createMessageKey } from '../shared/utils'
 import {
   extendMessageModels,
   MESSAGE_MIGRATION_ID,
+  MESSAGE_TYPE_MIGRATION_ID,
+  migrateMessageTypes,
   migrateMessageV2,
 } from '../src/model'
+import { getMessageTypeMask, MESSAGE_TYPE_BITS } from '../src/query'
 
 const contexts: Context[] = []
 
@@ -96,7 +99,9 @@ describe('message v2 model', () => {
     })
 
     const key = createMessageKey({ platform: 'onebot', guildId: '100', id: '42' })
-    assert.equal((await ctx.database.get('w-message-v2', { key }))[0].content, 'hello')
+    const [message] = await ctx.database.get('w-message-v2', { key })
+    assert.equal(message.content, 'hello')
+    assert.equal(message.messageTypeMask, MESSAGE_TYPE_BITS.text)
     assert.deepEqual(await ctx.database.get('w-message-word-v2', {}), [{
       messageKey: key,
       platform: 'onebot',
@@ -118,5 +123,43 @@ describe('message v2 model', () => {
       messages: 0,
       words: 0,
     })
+  })
+
+  it('indexes message element types for existing v2 rows', async () => {
+    const ctx = await createContext()
+    const key = createMessageKey({ platform: 'discord', guildId: '200', id: '42' })
+    await ctx.database.create('w-message-v2', {
+      key,
+      id: '42',
+      platform: 'discord',
+      guildId: '200',
+      userId: '1',
+      username: 'Alice',
+      content: 'caption<img src="https://example.com/a.png"/><audio src="a"/>',
+      timestamp: 1,
+      segmented: false,
+      messageTypeMask: 0,
+    })
+
+    assert.deepEqual(await migrateMessageTypes(ctx), {
+      skipped: false,
+      messages: 1,
+      words: 0,
+    })
+    const [message] = await ctx.database.get('w-message-v2', { key })
+    assert.equal(message.messageTypeMask,
+      MESSAGE_TYPE_BITS.text | MESSAGE_TYPE_BITS.image | MESSAGE_TYPE_BITS.audio)
+    assert.equal((await ctx.database.get('w-message-migration', {
+      id: MESSAGE_TYPE_MIGRATION_ID,
+    })).length, 1)
+  })
+})
+
+describe('message type detection', () => {
+  it('recognizes all filterable resource types', () => {
+    const mask = getMessageTypeMask(
+      'text<img src="image"/><audio src="audio"/><video src="video"/><file src="file"/>',
+    )
+    assert.equal(mask, Object.values(MESSAGE_TYPE_BITS).reduce((result, bit) => result | bit, 0))
   })
 })

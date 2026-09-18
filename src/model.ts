@@ -9,8 +9,10 @@ import {
   SavedMessageWord,
 } from './types'
 import { createMessageKey } from '../shared/utils'
+import { getMessageTypeMask } from './query'
 
 export const MESSAGE_MIGRATION_ID = 'v2'
+export const MESSAGE_TYPE_MIGRATION_ID = 'v3-message-types'
 const MIGRATION_BATCH_SIZE = 500
 
 declare module 'koishi' {
@@ -68,6 +70,7 @@ export function extendMessageModels(ctx: Context) {
     timestamp: 'unsigned(8)',
     segmented: 'boolean',
     quoteId: 'string',
+    messageTypeMask: 'unsigned',
   }, {
     primary: 'key',
     indexes: [
@@ -139,6 +142,7 @@ export async function migrateMessageV2(ctx: Context): Promise<MessageMigrationRe
     const messages: SavedMessage[] = legacyMessages.map(message => ({
       ...message,
       key: createMessageKey(message),
+      messageTypeMask: getMessageTypeMask(message.content),
     }))
     const keysByLegacyId = new Map(messages.map(message => [message.id, message.key]))
     const legacyWords = await ctx.database.get('w-message-word', {
@@ -173,6 +177,44 @@ export async function migrateMessageV2(ctx: Context): Promise<MessageMigrationRe
     messages: messageCount,
     words: wordCount,
   }
+}
+
+export async function migrateMessageTypes(ctx: Context): Promise<MessageMigrationResult> {
+  const [completed] = await ctx.database.get('w-message-migration', {
+    id: MESSAGE_TYPE_MIGRATION_ID,
+  })
+  if (completed) return { skipped: true, messages: 0, words: 0 }
+
+  let cursor: string | undefined
+  let messageCount = 0
+  while (true) {
+    const messages = await ctx.database
+      .select('w-message-v2')
+      .where(cursor === undefined ? {} : { key: { $gt: cursor } })
+      .orderBy('key')
+      .limit(MIGRATION_BATCH_SIZE)
+      .execute()
+    if (! messages.length) break
+
+    await ctx.database.upsert('w-message-v2', messages.map(message => ({
+      key: message.key,
+      messageTypeMask: getMessageTypeMask(message.content),
+    })))
+    messageCount += messages.length
+    cursor = messages.at(-1)!.key
+  }
+
+  await ctx.database.create('w-message-migration', {
+    id: MESSAGE_TYPE_MIGRATION_ID,
+    completedAt: new Date(),
+  }).catch(async error => {
+    const [marker] = await ctx.database.get('w-message-migration', {
+      id: MESSAGE_TYPE_MIGRATION_ID,
+    })
+    if (! marker) throw error
+  })
+
+  return { skipped: false, messages: messageCount, words: 0 }
 }
 
 async function validateBatch(

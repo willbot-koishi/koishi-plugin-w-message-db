@@ -57,7 +57,10 @@ export interface LegacySavedMessage extends SavedMessageHeader {
 
 export interface SavedMessage extends LegacySavedMessage {
   key: string
+  messageTypeMask: number
 }
+
+export type MessageType = 'text' | 'image' | 'audio' | 'video' | 'file'
 
 export interface LegacySavedMessageWord extends TaggedWord, SavedMessageHeader {
   messageId: string
