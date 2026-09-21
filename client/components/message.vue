@@ -10,6 +10,8 @@ import { useMessageStore } from '../stores/message'
 const props = defineProps<{
   message: SavedMessage
   showTime?: boolean
+  highlightKeyword?: string
+  highlightMode?: 'plain' | 'regex'
 }>()
 
 const { guildMembers } = useMessageStore()
@@ -25,6 +27,35 @@ const getUserName = (userId: string) => {
 
 const RESOURCE_ELEMENT_TYPES = [ 'image', 'img', 'video', 'audio' ]
 
+const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+const splitHighlightedText = (text: string) => {
+  if (! props.highlightKeyword) return [{ text, highlighted: false }]
+
+  const pattern = props.highlightMode === 'regex'
+    ? props.highlightKeyword
+    : escapeRegExp(props.highlightKeyword)
+  const regex = new RegExp(pattern, 'g')
+  const parts: Array<{ text: string, highlighted: boolean }> = []
+  let cursor = 0
+  let match: RegExpExecArray
+  while ((match = regex.exec(text)) !== null) {
+    if (match[0]) {
+      if (match.index > cursor) {
+        parts.push({ text: text.slice(cursor, match.index), highlighted: false })
+      }
+      parts.push({ text: match[0], highlighted: true })
+      cursor = match.index + match[0].length
+    }
+    else {
+      // Empty regex matches have no visible text to highlight and must advance.
+      regex.lastIndex = match.index + 1
+    }
+  }
+  if (cursor < text.length) parts.push({ text: text.slice(cursor), highlighted: false })
+  return parts
+}
+
 const isActive = ref(false)
 </script>
 
@@ -38,10 +69,11 @@ const isActive = ref(false)
     </div>
     <div class="message-right">
       <div class="message-author">
-        {{ message.username }}
+        <span>{{ message.username }}</span>
         <span v-if="showTime" class="message-time">
           {{ new Date(message.timestamp).toLocaleString() }}
         </span>
+        <slot name="author-action"></slot>
       </div>
       <div
         class="message-content"
@@ -51,7 +83,10 @@ const isActive = ref(false)
       >
         <template v-for="element, index of elements">
           <template v-if="element.type === 'text'">
-            <pre>{{ h.unescape(element.toString()) }}</pre>
+            <pre><template
+              v-for="part, partIndex of splitHighlightedText(h.unescape(element.toString()))"
+              :key="partIndex"
+            ><mark v-if="part.highlighted">{{ part.text }}</mark><template v-else>{{ part.text }}</template></template></pre>
             <br v-if="index < lastIndex" />
           </template>
           <template v-else-if="element.type === 'image' || element.type === 'img'">
@@ -72,7 +107,7 @@ const isActive = ref(false)
           <template v-else>
             [{{ element.type }}]
           </template>
-        </template>  
+        </template>
       </div>
     </div>
   </div>
@@ -114,6 +149,13 @@ const isActive = ref(false)
   white-space: break-spaces;
 }
 
+.message-content mark {
+  border-radius: .15em;
+  padding: 0 .05em;
+  color: inherit;
+  background: var(--el-color-warning-light-3);
+}
+
 .message-content.resource-only {
   line-height: 0;
   padding: 0;
@@ -133,6 +175,9 @@ const isActive = ref(false)
 }
 
 .message-author {
+  display: flex;
+  align-items: center;
+  gap: .35rem;
   font-size: .8rem;
   padding-left: .1rem;
 }
