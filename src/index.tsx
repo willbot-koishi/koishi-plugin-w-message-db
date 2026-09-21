@@ -23,10 +23,10 @@ import type {} from '@koishijs/plugin-server'
 import type { GuildMember } from '@satorijs/protocol'
 
 import dayjs from 'dayjs'
-import type { EChartsOption } from 'echarts'
+import type * as echarts from 'echarts'
 
 import {
-  divide, formatSize, mapFrom, maxBy, stripUndefined, sumBy,
+  divide, formatCompactNumber, formatSize, mapFrom, maxBy, stripUndefined, sumBy,
   parseDuration, getGid, createMessageKey,
 } from '../shared/utils'
 import {
@@ -1382,7 +1382,8 @@ export class MdbService extends Service {
     ...statsOption
   }: MdbChartOption & MdbStatsTimeOption): Promise<MdbChart<MdbStatsTime>> {
     const data = await this.statsTime(statsOption)
-    const option: EChartsOption = {
+    const maxCount = data.timeData.length ? maxBy(data.timeData, it => it.count) : 0
+    const option: echarts.EChartsOption = {
       title: {
         text: statsOption.guildQuery
           ? i18n.text('message-db.chart.title.time-guild', {
@@ -1403,23 +1404,37 @@ export class MdbService extends Service {
         type: 'category',
         data: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'],
       },
+      tooltip: {
+        show: ! isStatic,
+        trigger: 'item',
+      },
       visualMap: {
         min: 0,
-        max: data.timeData.length ? maxBy(data.timeData, it => it.count) : 0,
+        max: maxCount,
         calculable: true,
         show: ! isStatic,
         orient: 'horizontal',
         bottom: '0',
         left: 'center',
+        text: [formatCompactNumber(maxCount), '0'],
       },
       grid: {
         left: '5%',
       },
       series: {
         type: 'heatmap',
-        silent: ! isStatic,
+        silent: isStatic,
         label: { show: true },
-        data: data.timeData.map(it => [it.hour, it.weekday, it.count]),
+        tooltip: {
+          formatter: '{b}',
+        },
+        data: data.timeData.map(it => ({
+          name: it.count.toLocaleString('en-US'),
+          value: [it.hour, it.weekday, it.count],
+          label: {
+            formatter: formatCompactNumber(it.count),
+          },
+        })),
       },
       backgroundColor: isStatic ? '#fff' : undefined,
     }

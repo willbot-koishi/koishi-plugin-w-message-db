@@ -1,6 +1,6 @@
 import type { DataService } from '@koishijs/plugin-console'
 
-import type { EChartsOption } from 'echarts'
+import type * as echarts from 'echarts'
 import type { Tag, Tag as TaggedWord } from 'koishi-plugin-w-jieba'
 
 import type { MdbService } from '.'
@@ -202,7 +202,7 @@ export type UniversalI18n = {
 }
 
 export interface MdbChart<T = any> {
-  option: EChartsOption
+  option: echarts.EChartsOption
   data?: T
 }
 

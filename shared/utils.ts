@@ -54,6 +54,26 @@ export const formatSize = (size: number) => {
   }
 }
 
+const COMPACT_NUMBER_UNITS = ['', 'k', 'm', 'b', 't']
+
+export const formatCompactNumber = (value: number) => {
+  const absolute = Math.abs(value)
+  if (absolute < 1000 || ! Number.isFinite(value)) return String(value)
+
+  let unitIndex = Math.min(
+    Math.floor(Math.log10(absolute) / 3),
+    COMPACT_NUMBER_UNITS.length - 1,
+  )
+  let scaled = value / 1000 ** unitIndex
+  let rounded = Number(scaled.toFixed(Math.abs(scaled) < 10 ? 1 : 0))
+  if (Math.abs(rounded) >= 1000 && unitIndex < COMPACT_NUMBER_UNITS.length - 1) {
+    unitIndex ++
+    scaled = value / 1000 ** unitIndex
+    rounded = Number(scaled.toFixed(Math.abs(scaled) < 10 ? 1 : 0))
+  }
+  return `${rounded}${COMPACT_NUMBER_UNITS[unitIndex]}`
+}
+
 export const mapFrom = <T, K, V = T>(
   arr: T[],
   getKey: <U extends T>(item: U) => K,
