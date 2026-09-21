@@ -910,11 +910,12 @@ export class MdbService extends Service {
     }
     catch (error) {
       if (signal.aborted) return
-      this.logger.error('database migration failed: %s', error)
+      this.logger.error('database migration failed:')
+      this.logger.error(error)
       this.updateMigration({
         ...this.migration,
         status: 'error',
-        error: String(error),
+        error,
       }, true)
     }
   }

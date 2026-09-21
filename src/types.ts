@@ -97,7 +97,7 @@ export interface MessageMigrationState {
   stage?: MessageMigrationStage
   processed: number
   total: number
-  error?: string
+  error?: any
 }
 
 export interface GuildQuery {
