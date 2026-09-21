@@ -1,4 +1,4 @@
-import { $, Context } from 'koishi'
+import { $, Context, h, Query } from 'koishi'
 
 import {
   LegacySavedMessage,
@@ -13,9 +13,16 @@ import { getMessageTypeMask } from './query'
 
 export const MESSAGE_MIGRATION_ID = 'v2'
 export const MESSAGE_TYPE_MIGRATION_ID = 'v3-message-types'
+export const ASSET_HOST_MIGRATION_ID = 'v4-asset-host-genshin-asm-ms'
 export const MESSAGE_MIGRATION_PROGRESS_ID = `${MESSAGE_MIGRATION_ID}-progress`
 export const MESSAGE_TYPE_MIGRATION_PROGRESS_ID = `${MESSAGE_TYPE_MIGRATION_ID}-progress`
+export const ASSET_HOST_MIGRATION_PROGRESS_ID = `${ASSET_HOST_MIGRATION_ID}-progress`
+export const OLD_ASSET_HOSTNAME = 'genshin.asm.ms'
+export const NEW_ASSET_HOSTNAME = 'hjp0aj1a3c9.sn.mynetname.net'
 const MIGRATION_BATCH_SIZE = 500
+const ASSET_HOST_PATTERN = /(?:genshin\.asm\.ms|hjp0aj1a3c9\.sn\.mynetname\.net)/
+const ASSET_ELEMENTS = new Set(['audio', 'file', 'image', 'img', 'video'])
+const ASSET_ID_PATH = /^\/assets\/([\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12})\/?$/i
 
 declare module 'koishi' {
   interface Tables {
@@ -136,6 +143,173 @@ export interface MessageMigrationOptions {
   batchSize?: number
   signal?: AbortSignal
   onProgress?: (progress: MessageMigrationProgress) => void
+}
+
+export interface AssetHostMigrationResult {
+  skipped: boolean
+  messages: number
+  assets: number
+  retained: number
+}
+
+export interface AssetHostMigrationOptions extends MessageMigrationOptions {
+  markPermanent?: (ids: string[]) => Promise<number>
+}
+
+export interface RelocateAssetHostsResult {
+  content: string
+  changed: number
+  assetIds: string[]
+}
+
+export function relocateAssetHosts(
+  content: string,
+  oldHostname = OLD_ASSET_HOSTNAME,
+  newHostname = NEW_ASSET_HOSTNAME,
+): RelocateAssetHostsResult {
+  let changed = 0
+  const assetIds = new Set<string>()
+  const elements = h.parse(content)
+
+  const visit = (element: h) => {
+    if (ASSET_ELEMENTS.has(element.type) && typeof element.attrs.src === 'string') {
+      try {
+        const url = new URL(element.attrs.src)
+        if (url.hostname === oldHostname) {
+          url.hostname = newHostname
+          element.attrs.src = url.href
+          changed ++
+        }
+        if (url.hostname === newHostname) {
+          const match = url.pathname.match(ASSET_ID_PATH)
+          if (match) assetIds.add(match[1])
+        }
+      }
+      catch {
+        // Relative and malformed resource URLs are unrelated to this migration.
+      }
+    }
+    element.children.forEach(visit)
+  }
+
+  elements.forEach(visit)
+  return {
+    content: changed ? elements.join('') : content,
+    changed,
+    assetIds: [...assetIds],
+  }
+}
+
+export async function migrateAssetHosts(
+  ctx: Context,
+  options: AssetHostMigrationOptions = {},
+): Promise<AssetHostMigrationResult> {
+  const state = await getMigrationProgress(
+    ctx,
+    ASSET_HOST_MIGRATION_ID,
+    ASSET_HOST_MIGRATION_PROGRESS_ID,
+  )
+  if (state?.completedAt) {
+    return { skipped: true, messages: 0, assets: 0, retained: 0 }
+  }
+
+  const query: Query<SavedMessage> = {
+    content: { $regex: ASSET_HOST_PATTERN },
+  }
+  const batchSize = Math.max(1, Math.floor(options.batchSize ?? MIGRATION_BATCH_SIZE))
+  let cursor = state?.cursor ?? undefined
+  let processed = state?.processed ?? 0
+  const total = state?.total || await ctx.database
+    .select('w-message-v2')
+    .where(query)
+    .execute(row => $.count(row.key))
+  let messageCount = 0
+  let assetCount = 0
+  let retainedCount = 0
+
+  await saveMigrationProgress(ctx, {
+    id: ASSET_HOST_MIGRATION_PROGRESS_ID,
+    cursor,
+    processed,
+    total,
+  })
+  options.onProgress?.({
+    id: ASSET_HOST_MIGRATION_ID,
+    processed,
+    total,
+    completed: false,
+  })
+
+  while (true) {
+    options.signal?.throwIfAborted()
+    const messages = await ctx.database
+      .select('w-message-v2')
+      .where(query)
+      .where(cursor === undefined ? {} : { key: { $gt: cursor } })
+      .orderBy('key')
+      .limit(batchSize)
+      .execute()
+    if (! messages.length) break
+
+    const updates: Pick<SavedMessage, 'key' | 'content'>[] = []
+    const assetIds = new Set<string>()
+    for (const message of messages) {
+      const result = relocateAssetHosts(message.content)
+      result.assetIds.forEach(id => assetIds.add(id))
+      assetCount += result.changed
+      if (result.changed) {
+        messageCount ++
+        updates.push({ key: message.key, content: result.content })
+      }
+    }
+
+    // Retain first: after content is rewritten, a crash must not leave a
+    // successfully migrated URL pointing at an asset still eligible for GC.
+    if (assetIds.size && options.markPermanent) {
+      retainedCount += await options.markPermanent([...assetIds])
+    }
+    if (updates.length) await ctx.database.upsert('w-message-v2', updates)
+
+    processed += messages.length
+    cursor = messages.at(-1)!.key
+    await saveMigrationProgress(ctx, {
+      id: ASSET_HOST_MIGRATION_PROGRESS_ID,
+      cursor,
+      processed,
+      total,
+    })
+    options.onProgress?.({
+      id: ASSET_HOST_MIGRATION_ID,
+      processed,
+      total,
+      completed: false,
+    })
+  }
+
+  options.signal?.throwIfAborted()
+  await saveMigrationProgress(ctx, {
+    id: ASSET_HOST_MIGRATION_ID,
+    cursor,
+    processed: total,
+    total,
+    completedAt: new Date(),
+  })
+  await ctx.database.remove('w-message-migration', {
+    id: ASSET_HOST_MIGRATION_PROGRESS_ID,
+  })
+  options.onProgress?.({
+    id: ASSET_HOST_MIGRATION_ID,
+    processed: total,
+    total,
+    completed: true,
+  })
+
+  return {
+    skipped: false,
+    messages: messageCount,
+    assets: assetCount,
+    retained: retainedCount,
+  }
 }
 
 export async function migrateMessageV2(

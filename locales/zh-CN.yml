@@ -154,3 +154,13 @@ commands:
     messages:
       aborted: "已中止任务 #{id}。"
       not-found: "任务 #{id} 不存在。"
+
+  message-db.asset-migration:
+    description: "管理消息资源迁移"
+
+  message-db.asset-migration.run:
+    description: "迁移旧资源域名并将消息资源设为永久"
+    messages:
+      started: "已启动资源迁移任务 #{id}。可使用 message-db.task.list 查看进度。"
+      already-running: "资源迁移任务 #{id} 已在运行。"
+      assets-pro-required: "资源迁移需要 assetsPro 服务。"

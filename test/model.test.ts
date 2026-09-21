@@ -8,12 +8,16 @@ import { createMessageKey } from '../shared/utils'
 import {
   extendMessageModels,
   markMessageTypesMigrated,
+  ASSET_HOST_MIGRATION_ID,
+  ASSET_HOST_MIGRATION_PROGRESS_ID,
   MESSAGE_MIGRATION_ID,
   MESSAGE_MIGRATION_PROGRESS_ID,
   MESSAGE_TYPE_MIGRATION_ID,
   MESSAGE_TYPE_MIGRATION_PROGRESS_ID,
+  migrateAssetHosts,
   migrateMessageTypes,
   migrateMessageV2,
+  relocateAssetHosts,
 } from '../src/model'
 import { getMessageTypeMask, MESSAGE_TYPE_BITS } from '../src/query'
 
@@ -265,5 +269,100 @@ describe('message type detection', () => {
       'text<img src="image"/><audio src="audio"/><video src="video"/><file src="file"/>',
     )
     assert.equal(mask, Object.values(MESSAGE_TYPE_BITS).reduce((result, bit) => result | bit, 0))
+  })
+})
+
+describe('asset host migration', () => {
+  const firstAssetId = '11111111-1111-4111-8111-111111111111'
+  const secondAssetId = '22222222-2222-4222-8222-222222222222'
+
+  it('only relocates resource URLs on the legacy host', () => {
+    const result = relocateAssetHosts([
+      `<img src="http://genshin.asm.ms:5140/assets/${firstAssetId}?inline=1"/>`,
+      '<file src="http://genshin.asm.ms:5140/files/legacy.dat"/>',
+      `<video src="http://hjp0aj1a3c9.sn.mynetname.net:5140/assets/${secondAssetId}"/>`,
+      '<img src="https://example.com/genshin.asm.ms/image.png"/>',
+      'genshin.asm.ms',
+    ].join(''))
+
+    assert.equal(result.changed, 2)
+    assert.deepEqual(result.assetIds, [firstAssetId, secondAssetId])
+    assert.match(result.content,
+      new RegExp(`http://hjp0aj1a3c9\\.sn\\.mynetname\\.net:5140/assets/${firstAssetId}\\?inline=1`))
+    assert.match(result.content,
+      /http:\/\/hjp0aj1a3c9\.sn\.mynetname\.net:5140\/files\/legacy\.dat/)
+    assert.match(result.content, /https:\/\/example\.com\/genshin\.asm\.ms\/image\.png/)
+  })
+
+  it('resumes after a durable batch and retains UUID assets', async () => {
+    const ctx = await createContext()
+    const messages = [
+      { id: '1', assetId: firstAssetId },
+      { id: '2', assetId: secondAssetId },
+    ].map(({ id, assetId }) => ({
+      key: createMessageKey({ platform: 'onebot', guildId: '100', id }),
+      id,
+      platform: 'onebot',
+      guildId: '100',
+      userId: '1',
+      username: 'Alice',
+      content: `<img src="http://genshin.asm.ms:5140/assets/${assetId}"/>`,
+      timestamp: Number(id),
+      segmented: false,
+      messageTypeMask: MESSAGE_TYPE_BITS.image,
+    })).sort((a, b) => a.key.localeCompare(b.key))
+    await ctx.database.upsert('w-message-v2', messages)
+
+    const retained: string[] = []
+    const controller = new AbortController()
+    await assert.rejects(migrateAssetHosts(ctx, {
+      batchSize: 1,
+      signal: controller.signal,
+      async markPermanent(ids) {
+        retained.push(...ids)
+        return ids.length
+      },
+      onProgress(progress) {
+        if (progress.processed === 1) controller.abort()
+      },
+    }), { name: 'AbortError' })
+
+    const [checkpoint] = await ctx.database.get('w-message-migration', {
+      id: ASSET_HOST_MIGRATION_PROGRESS_ID,
+    })
+    assert.equal(checkpoint.cursor, messages[0].key)
+    assert.equal(checkpoint.processed, 1)
+    assert.equal(checkpoint.total, 2)
+
+    const result = await migrateAssetHosts(ctx, {
+      batchSize: 1,
+      async markPermanent(ids) {
+        retained.push(...ids)
+        return ids.length
+      },
+    })
+    assert.deepEqual(result, {
+      skipped: false,
+      messages: 1,
+      assets: 1,
+      retained: 1,
+    })
+    assert.deepEqual(new Set(retained), new Set([firstAssetId, secondAssetId]))
+
+    const migrated = await ctx.database.get('w-message-v2', {})
+    assert.ok(migrated.every(message => message.content.includes('hjp0aj1a3c9.sn.mynetname.net')))
+    assert.ok(migrated.every(message => ! message.content.includes('genshin.asm.ms')))
+    assert.equal((await ctx.database.get('w-message-migration', {
+      id: ASSET_HOST_MIGRATION_PROGRESS_ID,
+    })).length, 0)
+    assert.equal((await ctx.database.get('w-message-migration', {
+      id: ASSET_HOST_MIGRATION_ID,
+    })).length, 1)
+    assert.deepEqual(await migrateAssetHosts(ctx), {
+      skipped: true,
+      messages: 0,
+      assets: 0,
+      retained: 0,
+    })
   })
 })

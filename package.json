@@ -25,6 +25,7 @@
     "dayjs": "^1.11.19",
     "echarts": "^6.0.0",
     "html2canvas": "^1.4.1",
+    "koishi-plugin-w-assets-core": "workspace:^",
     "vue-echarts": "^7.0.3"
   },
   "devDependencies": {

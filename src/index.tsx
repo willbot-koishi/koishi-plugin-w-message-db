@@ -17,6 +17,7 @@ import type {} from 'koishi-plugin-w-jieba'
 import type {} from 'koishi-plugin-w-wordcloud'
 import type {} from 'koishi-plugin-w-option-conflict'
 import type { NapCatBot } from 'koishi-plugin-adapter-napcat'
+import { AssetLife } from 'koishi-plugin-w-assets-core'
 import type {} from '@koishijs/plugin-auth'
 import type {} from '@koishijs/plugin-server'
 import type { GuildMember } from '@satorijs/protocol'
@@ -51,6 +52,7 @@ import {
 import {
   extendMessageModels,
   markMessageTypesMigrated,
+  migrateAssetHosts,
   migrateMessageTypes,
   migrateMessageV2,
 } from './model'
@@ -81,7 +83,7 @@ declare module '@koishijs/plugin-console' {
 export class MdbService extends Service {
   static inject = {
     required: ['database', 'cron', 'console'],
-    optional: ['echarts', 'assets', 'server', 'jieba', 'wordcloud'],
+    optional: ['echarts', 'assets', 'assetsPro', 'server', 'jieba', 'wordcloud'],
   }
 
   logger = this.ctx.logger('w-message-db')
@@ -347,6 +349,54 @@ export class MdbService extends Service {
         task.ac.abort()
         delete this.tasks[id]
         return session.text('.aborted', { id })
+      })
+
+    ctx.command('message-db.asset-migration')
+
+    ctx.command('message-db.asset-migration.run', { authority: 4 })
+      .action(({ session }) => {
+        const running = Object.entries(this.tasks)
+          .find(([, task]) => task.key === 'asset-host-migration')
+        if (running) {
+          return session.text('.already-running', { id: running[0] })
+        }
+        if (! this.ctx.assetsPro) {
+          return session.text('.assets-pro-required')
+        }
+
+        let taskId = -1
+        const task = this.startTask(
+          'asset host migration',
+          signal => migrateAssetHosts(this.ctx, {
+            signal,
+            markPermanent: ids => this.ctx.assetsPro.markPermanent(ids),
+            onProgress: ({ processed, total }) => {
+              const current = this.tasks[taskId]
+              if (current) {
+                current.description = `asset host migration (${processed}/${total})`
+              }
+            },
+          }),
+          'asset-host-migration',
+        )
+        taskId = task.id
+        void task.promise.then((result) => {
+          if (result.skipped) {
+            this.logger.info('asset host migration was already completed')
+            return
+          }
+          this.logger.info(
+            'asset host migration updated %d URLs in %d messages and retained %d assets',
+            result.assets,
+            result.messages,
+            result.retained,
+          )
+        }).catch((error) => {
+          if (error instanceof Error && error.name === 'AbortError') return
+          this.logger.error('asset host migration failed:')
+          this.logger.error(error)
+        })
+        return session.text('.started', { id: task.id })
       })
 
     ctx.command('message-db.stats')
@@ -703,24 +753,32 @@ export class MdbService extends Service {
   private nextTaskId = 0
   private tasks: Record<number, {
     ac: AbortController
+    key?: string
     description: string
     startAt: number
   }> = {}
 
-  private async runTask(description: string, task: (signal: AbortSignal) => Promise<void>) {
+  private startTask<T>(
+    description: string,
+    task: (signal: AbortSignal) => Promise<T>,
+    key?: string,
+  ) {
     const taskId = this.nextTaskId ++
     const ac = new AbortController()
     this.tasks[taskId] = {
       ac,
+      key,
       description,
       startAt: Date.now(),
     }
-    try {
-      await task(ac.signal)
-    }
-    finally {
-      delete this.tasks[taskId]
-    }
+    const promise = Promise.resolve()
+      .then(() => task(ac.signal))
+      .finally(() => delete this.tasks[taskId])
+    return { id: taskId, promise }
+  }
+
+  private async runTask<T>(description: string, task: (signal: AbortSignal) => Promise<T>) {
+    return this.startTask(description, task).promise
   }
 
   savedGuildMap = new Map<string, SavedGuild>()
@@ -1510,9 +1568,14 @@ export class MdbService extends Service {
     if (
       this.config.assetTransferring.enabled &&
       (savedGuild.isTracked || ! this.config.assetTransferring.requireTracking) &&
-      this.ctx.assets
+      (this.ctx.assetsPro || this.ctx.assets)
     ) {
-      content = await this.ctx.assets.transform(content)
+      content = this.ctx.assetsPro
+        ? await this.ctx.assetsPro.transform(content, {
+          categoryId: 'message-db',
+          life: AssetLife.Permanent,
+        })
+        : await this.ctx.assets.transform(content)
     }
     // Insert the message into the database.
     const message: SavedMessage = {

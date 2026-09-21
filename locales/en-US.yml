@@ -155,3 +155,13 @@ commands:
     messages:
       aborted: "Aborted task #{id}."
       not-found: "Task #{id} not found."
+
+  message-db.asset-migration:
+    description: "Manage message asset migrations"
+
+  message-db.asset-migration.run:
+    description: "Relocate the legacy asset host and retain message assets permanently"
+    messages:
+      started: "Started asset migration task #{id}. Use message-db.task.list to view its progress."
+      already-running: "Asset migration task #{id} is already running."
+      assets-pro-required: "The asset migration requires the assetsPro service."
