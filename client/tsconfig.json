@@ -2,12 +2,22 @@
   "compilerOptions": {
     "rootDir": "..",
     "module": "esnext",
-    "target": "es2015",
-    "moduleResolution": "node10",
+    "target": "es2022",
+    "moduleResolution": "bundler",
     "allowSyntheticDefaultImports": true,
     "noImplicitAny": true,
+    "skipLibCheck": true,
+    "jsx": "react-jsx",
+    "jsxImportSource": "@satorijs/element",
+    "paths": {
+      "@koishijs/client": [
+        "./types/koishijs-client.d.ts"
+      ]
+    },
     "types": [
-      "@koishijs/client/global"
+      "element-plus/global",
+      "vite/client",
+      "vue-i18n"
     ],
   },
   "include": [

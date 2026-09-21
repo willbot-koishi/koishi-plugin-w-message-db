@@ -36,7 +36,9 @@
     "koishi-plugin-w-echarts": "workspace:^",
     "koishi-plugin-w-jieba": "workspace:^",
     "koishi-plugin-w-option-conflict": "workspace:^",
-    "koishi-plugin-w-wordcloud": "workspace:^"
+    "koishi-plugin-w-wordcloud": "workspace:^",
+    "typescript": "^5.9.3",
+    "vue-tsc": "^3.3.11"
   },
   "koishi": {
     "service": {
@@ -53,9 +55,12 @@
     }
   },
   "scripts": {
-    "build": "yarn workspace willbot build w-message-db",
-    "bump": "yarn workspace willbot bump w-message-db",
-    "pub": "yarn workspace willbot pub w-message-db",
+    "build": "yarn run -T build w-message-db",
+    "check": "yarn check:server && yarn check:client",
+    "check:server": "tsc -p tsconfig.json --noEmit --emitDeclarationOnly false --tsBuildInfoFile node_modules/.cache/w-message-db-check.tsbuildinfo",
+    "check:client": "vue-tsc -p client/tsconfig.json --noEmit",
+    "bump": "yarn run -T bump w-message-db",
+    "pub": "yarn run -T pub w-message-db",
     "loc": "tokei -e '*.yml' -e '*.md' -e '*.json'"
   },
   "repository": "git+https://github.com/willbot-koishi/koishi-plugin-w-message-db"
