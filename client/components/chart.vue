@@ -13,6 +13,7 @@ const props = defineProps<{
   defaultTitle: string
   width: string
   height: string
+  loading?: boolean
 }>()
 
 const title = computed(() => {
@@ -24,9 +25,14 @@ const title = computed(() => {
 <template>
   <k-card :title="title" class="w-chart">
     <slot></slot>
-    <div class="w-chart-inner" :style="{ width, height }">
+    <div
+      v-loading="loading"
+      element-loading-text="加载中"
+      class="w-chart-inner"
+      :style="{ width, height }"
+    >
       <catch-error
-        v-if="chart"
+        v-if="chart && ! loading"
         :data="chart"
         #="{ data: chart }"
       >
@@ -37,6 +43,7 @@ const title = computed(() => {
           })"
         />
       </catch-error>
+      <span v-else-if="! loading" class="w-chart-empty">尚未加载</span>
     </div>
   </k-card>
 </template>
@@ -45,5 +52,10 @@ const title = computed(() => {
 .w-chart-inner {
   display: flex;
   justify-content: center;
+  align-items: center;
 } 
+
+.w-chart-empty {
+  color: var(--fg2);
+}
 </style>

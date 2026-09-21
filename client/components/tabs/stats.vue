@@ -17,35 +17,84 @@ const statsTimeCharts: Reactive<Record<string, MdbChart | MdbRemoteError>> = rea
 
 const statsMemberChartGid: Ref<string> = ref(null)
 const statsTimeChartGid: Ref<string> = ref('global')
+const statsLoading = ref(true)
+const statsGuildsChartLoading = ref(true)
+const statsMemberChartLoading = ref(false)
+const statsTimeChartLoading = ref(true)
 
-onMounted(async () => {
-  [
-    stats.value,
-    statsGuildsChart.value,
-    statsTimeCharts.global
-  ] = await Promise.all([
-    send('message-db/stats'),
-    send('message-db/statsGuildsChart', {}),
-    send('message-db/statsTimeChart', {}),
-  ])
+const INTERNAL_ERROR = { error: 'internal' } as const
+
+const loadStats = async () => {
+  statsLoading.value = true
+  try {
+    stats.value = await send('message-db/stats')
+  }
+  catch {
+    stats.value = INTERNAL_ERROR
+  }
+  finally {
+    statsLoading.value = false
+  }
+}
+
+const loadStatsGuildsChart = async () => {
+  statsGuildsChartLoading.value = true
+  try {
+    statsGuildsChart.value = await send('message-db/statsGuildsChart', {})
+  }
+  catch {
+    statsGuildsChart.value = INTERNAL_ERROR
+  }
+  finally {
+    statsGuildsChartLoading.value = false
+  }
+}
+
+onMounted(() => {
+  void loadStats()
+  void loadStatsGuildsChart()
+  void fetchStatsTimeChart(statsTimeChartGid.value)
 })
 
 const loadStatsMembersChart = async () => {
-  if (! statsMemberChartGid.value) return
-  const [ platform, guildId ] = statsMemberChartGid.value.split(':')
-  const chart = await send('message-db/statsMembersChart', { guildQuery: { platform, guildId } })
-  statsMemberCharts[statsMemberChartGid.value] = chart
+  const gid = statsMemberChartGid.value
+  if (! gid || statsMemberChartLoading.value) return
+  statsMemberChartLoading.value = true
+  const [ platform, guildId ] = gid.split(':')
+  try {
+    statsMemberCharts[gid] = await send('message-db/statsMembersChart', {
+      guildQuery: { platform, guildId },
+    })
+  }
+  catch {
+    statsMemberCharts[gid] = INTERNAL_ERROR
+  }
+  finally {
+    statsMemberChartLoading.value = false
+  }
 }
 
-const loadStatsTimeChart = async () => {
-  const gid = statsTimeChartGid.value
+const fetchStatsTimeChart = async (gid: string) => {
+  statsTimeChartLoading.value = true
   let guildQuery: GuildQuery
   if (gid !== 'global') {
     const [ platform, guildId ] = gid.split(':')
     guildQuery = { platform, guildId }
   }
-  const chart = await send('message-db/statsTimeChart', { guildQuery })
-  statsTimeCharts[statsTimeChartGid.value] = chart
+  try {
+    statsTimeCharts[gid] = await send('message-db/statsTimeChart', { guildQuery })
+  }
+  catch {
+    statsTimeCharts[gid] = INTERNAL_ERROR
+  }
+  finally {
+    statsTimeChartLoading.value = false
+  }
+}
+
+const loadStatsTimeChart = () => {
+  if (statsTimeChartLoading.value) return
+  void fetchStatsTimeChart(statsTimeChartGid.value)
 }
 </script>
 
@@ -53,7 +102,8 @@ const loadStatsTimeChart = async () => {
   <k-content>
   <div class="tab-stats">
     <k-card title="概览">
-      <catch-error v-if="stats" :data="stats" #="{ data: stats }">
+      <el-skeleton v-if="statsLoading" :rows="4" animated />
+      <catch-error v-else-if="stats" :data="stats" #="{ data: stats }">
         总消息数：{{ stats.messageCount }}<br />
         总群组数：{{ stats.guildCount }}<br />
         追踪的群组数：{{ stats.trackedGuildCount }}<br />
@@ -66,16 +116,25 @@ const loadStatsTimeChart = async () => {
       width="37.5rem"
       height="16.5rem"
       :chart="statsTimeCharts[statsTimeChartGid]"
+      :loading="statsTimeChartLoading"
     >
       <div class="group">
-        <select-guild v-model="statsTimeChartGid" :with-global="true" />
-        <el-button @click="loadStatsTimeChart">加载</el-button>
+        <select-guild
+          v-model="statsTimeChartGid"
+          :with-global="true"
+          :disabled="statsTimeChartLoading"
+        />
+        <el-button
+          :loading="statsTimeChartLoading"
+          @click="loadStatsTimeChart"
+        >加载</el-button>
       </div>
     </w-chart>
 
     <w-chart
       default-title="群组消息数量"
       :chart="statsGuildsChart"
+      :loading="statsGuildsChartLoading"
       width="37.5rem"
       height="28.125rem"
     />
@@ -85,10 +144,18 @@ const loadStatsTimeChart = async () => {
       width="37.5rem"
       height="28.125rem"
       :chart="statsMemberCharts[statsMemberChartGid]"
+      :loading="statsMemberChartLoading"
     >
       <div class="group">
-        <select-guild v-model="statsMemberChartGid" />
-        <el-button @click="loadStatsMembersChart">加载</el-button>
+        <select-guild
+          v-model="statsMemberChartGid"
+          :disabled="statsMemberChartLoading"
+        />
+        <el-button
+          :disabled="! statsMemberChartGid"
+          :loading="statsMemberChartLoading"
+          @click="loadStatsMembersChart"
+        >加载</el-button>
       </div>
     </w-chart>
   </div>
