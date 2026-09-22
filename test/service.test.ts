@@ -173,6 +173,15 @@ describe('message service API', () => {
       [second.key, first.key],
     )
     assert.deepEqual(
+      (await service.getMessagesByRange({
+        platform: 'test',
+        guildId: '100',
+        startTime: 0,
+        endTime: 0,
+      })).map(message => message.key),
+      [first.key, second.key],
+    )
+    assert.deepEqual(
       (await service.getWordsByMessageKeys([second.key, first.key]))
         .map(word => `${word.messageKey}:${word.index}`),
       [`${second.key}:0`, `${first.key}:0`, `${first.key}:1`],

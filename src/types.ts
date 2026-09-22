@@ -72,6 +72,13 @@ export interface MessageFilter {
   types?: MessageType[]
 }
 
+export interface MessageRangeQuery {
+  platform: string
+  guildId: string
+  startTime: number
+  endTime: number
+}
+
 export interface LegacySavedMessageWord extends TaggedWord, SavedMessageHeader {
   messageId: string
   index: number

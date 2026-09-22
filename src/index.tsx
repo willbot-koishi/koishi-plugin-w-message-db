@@ -25,7 +25,9 @@ import type { GuildMember } from '@satorijs/protocol'
 import dayjs from 'dayjs'
 import type * as echarts from 'echarts'
 
-export type { MessageReference, SavedMessage, SavedMessageWord } from './types'
+export type {
+  MessageRangeQuery, MessageReference, SavedMessage, SavedMessageWord,
+} from './types'
 
 import {
   divide, formatCompactNumber, formatSize, mapFrom, maxBy, stripUndefined, sumBy,
@@ -48,6 +50,7 @@ import {
   GetGuildMembersOption,
   MessageMigrationStage,
   MessageMigrationState,
+  MessageRangeQuery,
   MdbStatsGuildsOption,
   SavedMessageWord,
 } from './types'
@@ -1579,6 +1582,39 @@ export class MdbService extends Service {
       const message = messageMap.get(key)
       return message ? [message] : []
     })
+  }
+
+  /** Read a chronological, inclusive message range without pagination loss. */
+  async getMessagesByRange(query: MessageRangeQuery): Promise<SavedMessage[]> {
+    const messages: SavedMessage[] = []
+    let cursor: Pick<SavedMessage, 'key' | 'timestamp'> | undefined
+    while (true) {
+      const batch = await this.ctx.database
+        .select('w-message-v2')
+        .where(row => $.and(
+          $.eq(row.platform, query.platform),
+          $.eq(row.guildId, query.guildId),
+          $.ge(row.timestamp, query.startTime),
+          $.le(row.timestamp, query.endTime),
+          cursor
+            ? $.or(
+              $.gt(row.timestamp, cursor.timestamp),
+              $.and(
+                $.eq(row.timestamp, cursor.timestamp),
+                $.gt(row.key, cursor.key),
+              ),
+            )
+            : true,
+        ))
+        .orderBy('timestamp')
+        .orderBy('key')
+        .limit(500)
+        .execute()
+      if (! batch.length) break
+      messages.push(...batch)
+      cursor = batch.at(-1)
+    }
+    return messages
   }
 
   /**
