@@ -864,16 +864,20 @@ export class MdbService extends Service {
       async function (this: Client, param: P): Promise<Awaited<R> | MdbRemoteError> {
         if (param.guildQuery) {
           const { platform, guildId } = param.guildQuery
-          const [binding] = await that.ctx.database.get('binding', {
+          if (! this.auth || this.auth.expiredAt <= Date.now()) {
+            return { error: 'authentication-required' }
+          }
+          const bindings = await that.ctx.database.get('binding', {
             platform,
             aid: this.auth.id,
           })
 
-          if (! binding) return { error: 'require-guild-member' }
+          if (! bindings.length) return { error: 'platform-binding-required' }
           const bot = that.getManagerBotOf(param.guildQuery)
           if (! bot?.isActive) return { error: 'bot-not-available' }
-          const isMember = await bot.getGuildMember(guildId, binding.pid)
-            .then(() => true).catch(() => false)
+          const isMember = (await Promise.all(bindings.map(binding =>
+            bot.getGuildMember(guildId, binding.pid).then(() => true, () => false)
+          ))).some(Boolean)
           if (! isMember) return { error: 'require-guild-member' }
         }
 

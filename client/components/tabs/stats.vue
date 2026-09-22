@@ -3,6 +3,7 @@ import { send } from '@koishijs/client'
 
 import { MdbStats, MdbRemoteError, MdbChart, GuildQuery } from '../../../src/types'
 import { formatSize } from '../../../shared/utils'
+import { normalizeRemoteError } from '../../utils/remote-error'
 
 import { ref, Ref, Reactive, reactive, onMounted } from 'vue'
 
@@ -22,15 +23,13 @@ const statsGuildsChartLoading = ref(true)
 const statsMemberChartLoading = ref(false)
 const statsTimeChartLoading = ref(true)
 
-const INTERNAL_ERROR = { error: 'internal' } as const
-
 const loadStats = async () => {
   statsLoading.value = true
   try {
     stats.value = await send('message-db/stats')
   }
-  catch {
-    stats.value = INTERNAL_ERROR
+  catch (error) {
+    stats.value = normalizeRemoteError(error)
   }
   finally {
     statsLoading.value = false
@@ -42,8 +41,8 @@ const loadStatsGuildsChart = async () => {
   try {
     statsGuildsChart.value = await send('message-db/statsGuildsChart', {})
   }
-  catch {
-    statsGuildsChart.value = INTERNAL_ERROR
+  catch (error) {
+    statsGuildsChart.value = normalizeRemoteError(error)
   }
   finally {
     statsGuildsChartLoading.value = false
@@ -66,8 +65,8 @@ const loadStatsMembersChart = async () => {
       guildQuery: { platform, guildId },
     })
   }
-  catch {
-    statsMemberCharts[gid] = INTERNAL_ERROR
+  catch (error) {
+    statsMemberCharts[gid] = normalizeRemoteError(error)
   }
   finally {
     statsMemberChartLoading.value = false
@@ -84,8 +83,8 @@ const fetchStatsTimeChart = async (gid: string) => {
   try {
     statsTimeCharts[gid] = await send('message-db/statsTimeChart', { guildQuery })
   }
-  catch {
-    statsTimeCharts[gid] = INTERNAL_ERROR
+  catch (error) {
+    statsTimeCharts[gid] = normalizeRemoteError(error)
   }
   finally {
     statsTimeChartLoading.value = false

@@ -18,6 +18,9 @@ export type MdbRemoteMethod =
 
 export type MdbRemoteError =
   | { error: 'internal' }
+  | { error: 'network' }
+  | { error: 'authentication-required' }
+  | { error: 'platform-binding-required' }
   | { error: 'bot-not-available' }
   | { error: 'migration-pending' }
   | { error: 'require-guild-member' }

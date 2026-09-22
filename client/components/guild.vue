@@ -5,6 +5,7 @@ import {
   GetMessageOption, GetMessagesResult, MdbRemoteError,
   MessageFilter, MessageType, SavedMessage,
 } from '../../src/types'
+import { normalizeRemoteError } from '../utils/remote-error'
 import { storeWrappedReactive } from '../utils/storage'
 
 import {
@@ -72,9 +73,12 @@ const MESSAGE_TYPE_OPTIONS: Array<{ value: MessageType, label: string }> = [
 
 const MESSAGE_LOAD_ERROR_TEXT = {
   internal: '加载消息失败：服务器内部错误。',
+  network: '加载消息失败：网络连接异常，请稍后重试。',
+  'authentication-required': '加载消息失败：请先登录 Koishi 控制台。',
+  'platform-binding-required': '加载消息失败：当前控制台账号尚未绑定此平台账号。',
   'bot-not-available': '加载消息失败：此群组的管理机器人当前不可用。',
   'migration-pending': '消息数据库正在迁移，请稍后再试。',
-  'require-guild-member': '加载消息失败：仅群成员可以查看消息。',
+  'require-guild-member': '加载消息失败：无法验证当前账号的群成员身份，请确认已加入该群。',
 } satisfies Record<MdbRemoteError['error'], string>
 
 // Bump the cache namespace when persisted message content is rewritten.
@@ -212,9 +216,9 @@ const requestMessages = async (
   try {
     result = await send('message-db/getMessages', options)
   }
-  catch {
+  catch (error) {
     if (isCurrentRequest(version, requestId))
-      messageLoadError.value = '加载消息失败，请检查网络连接后重试。'
+      messageLoadError.value = MESSAGE_LOAD_ERROR_TEXT[normalizeRemoteError(error).error]
     return
   }
 
