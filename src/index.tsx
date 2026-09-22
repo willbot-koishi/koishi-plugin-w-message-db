@@ -13,7 +13,7 @@ import type {} from '@koishijs/assets'
 import { DataService } from '@koishijs/plugin-console'
 import type {} from 'koishi-plugin-cron'
 import type { StrictEChartsOption } from 'koishi-plugin-w-echarts'
-import type {} from 'koishi-plugin-w-jieba'
+import type { Jieba } from 'koishi-plugin-w-jieba'
 import type {} from 'koishi-plugin-w-wordcloud'
 import type {} from 'koishi-plugin-w-option-conflict'
 import type { NapCatBot } from 'koishi-plugin-adapter-napcat'
@@ -100,6 +100,7 @@ export class MdbService extends Service {
   }
   private migrationRefreshAt = 0
   private captureTasks = new Map<string, Promise<SavedMessage | undefined>>()
+  private jieba?: Jieba
 
   constructor(ctx: Context, public config: MdbService.Config) {
     super(ctx, 'messageDb')
@@ -606,7 +607,7 @@ export class MdbService extends Service {
           let batchIndex = 0
 
           ctx.logger.info('init jieba')
-          const jieba = new ctx.jieba.Jieba()
+          const jieba = this.jieba ??= new ctx.jieba.Jieba()
 
           const [
             { segmentedCount, totalCount } = { segmentedCount: 0, totalCount: 0 }
@@ -1627,6 +1628,43 @@ export class MdbService extends Service {
     const keyOrder = new Map(uniqueKeys.map((key, index) => [key, index]))
     return words.sort((a, b) =>
       keyOrder.get(a.messageKey) - keyOrder.get(b.messageKey) || a.index - b.index)
+  }
+
+  /**
+   * Segment the requested messages when possible and return their canonical
+   * word rows. Existing results make this operation idempotent.
+   */
+  async ensureMessageWords(keys: readonly string[]): Promise<SavedMessageWord[]> {
+    const uniqueKeys = [...new Set(keys)]
+    if (! uniqueKeys.length) return []
+    const messages = await this.getMessagesByKeys(uniqueKeys)
+    const pending = messages.filter(message => ! message.segmented)
+    if (pending.length && this.ctx.jieba) {
+      const jieba = this.jieba ??= new this.ctx.jieba.Jieba()
+      const words = pending.flatMap(message => {
+        const text = h
+          .parse(message.content)
+          .filter(element => element.type === 'text')
+          .map(element => element.attrs.content)
+          .join('')
+        return jieba.tag(text).map((word, index) => ({
+          messageKey: message.key,
+          platform: message.platform,
+          guildId: message.guildId,
+          userId: message.userId,
+          timestamp: message.timestamp,
+          index,
+          ...word,
+        }))
+      })
+      if (words.length) await this.ctx.database.upsert('w-message-word-v2', words)
+      await this.ctx.database.set('w-message-v2', {
+        key: { $in: pending.map(message => message.key) },
+      }, {
+        segmented: true,
+      })
+    }
+    return this.getWordsByMessageKeys(uniqueKeys)
   }
 
   /** Protect messages referenced by another plugin from garbage collection. */

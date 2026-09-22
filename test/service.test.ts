@@ -204,4 +204,32 @@ describe('message service API', () => {
     assert.deepEqual(await ctx.database.get('w-message-v2', {}), [])
     assert.deepEqual(await ctx.database.get('w-message-word-v2', {}), [])
   })
+
+  it('segments requested messages idempotently', async () => {
+    const ctx = await createContext()
+    let segmentCount = 0
+    const service = createService(ctx, {
+      ctx: {
+        database: ctx.database,
+        jieba: {
+          Jieba: class {
+            tag(text: string) {
+              segmentCount ++
+              return text.split(/\s+/).map(word => ({ word, tag: 'x' }))
+            }
+          },
+        },
+      },
+    })
+    const saved = createMessage('1', { content: 'hello world' })
+    await ctx.database.create('w-message-v2', saved)
+
+    const first = await service.ensureMessageWords([saved.key])
+    const second = await service.ensureMessageWords([saved.key])
+
+    assert.deepEqual(first.map(word => word.word), ['hello', 'world'])
+    assert.deepEqual(second, first)
+    assert.equal(segmentCount, 1)
+    assert.equal((await ctx.database.get('w-message-v2', saved.key))[0].segmented, true)
+  })
 })

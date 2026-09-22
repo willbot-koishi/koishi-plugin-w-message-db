@@ -12,6 +12,8 @@ messages without duplicating their content or transferred assets:
 - `captureMessage(session)` waits for persistence and returns the saved message.
 - `getMessagesByKeys(keys)` and `getWordsByMessageKeys(keys)` hydrate records in
   key order.
+- `ensureMessageWords(keys)` idempotently creates missing message-db word rows
+  when the Jieba service is available, then returns the canonical rows.
 - `getMessagesByRange(query)` reads migration and analysis candidates using a
   stable chronological cursor.
 - `retainMessages(owner, keys)` and `releaseMessages(owner, keys)` protect
