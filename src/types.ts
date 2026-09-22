@@ -82,6 +82,11 @@ export interface SavedMessageWord extends TaggedWord, SavedMessageHeader {
   index: number
 }
 
+export interface MessageReference {
+  owner: string
+  messageKey: string
+}
+
 export interface MessageMigration {
   id: string
   cursor?: string | null

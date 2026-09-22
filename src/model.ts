@@ -3,6 +3,7 @@ import { $, Context, h, Query } from 'koishi'
 import {
   LegacySavedMessage,
   LegacySavedMessageWord,
+  MessageReference,
   MessageMigration,
   SavedGuild,
   SavedMessage,
@@ -30,6 +31,7 @@ declare module 'koishi' {
     'w-message-word': LegacySavedMessageWord
     'w-message-v2': SavedMessage
     'w-message-word-v2': SavedMessageWord
+    'w-message-reference': MessageReference
     'w-message-guild': SavedGuild
     'w-message-migration': MessageMigration
   }
@@ -102,6 +104,16 @@ export function extendMessageModels(ctx: Context) {
     indexes: [
       ['timestamp'],
       ['platform', 'guildId', 'timestamp'],
+    ],
+  })
+
+  ctx.model.extend('w-message-reference', {
+    owner: 'string',
+    messageKey: 'string',
+  }, {
+    primary: ['owner', 'messageKey'],
+    indexes: [
+      ['messageKey'],
     ],
   })
 

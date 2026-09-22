@@ -25,6 +25,8 @@ import type { GuildMember } from '@satorijs/protocol'
 import dayjs from 'dayjs'
 import type * as echarts from 'echarts'
 
+export type { MessageReference, SavedMessage, SavedMessageWord } from './types'
+
 import {
   divide, formatCompactNumber, formatSize, mapFrom, maxBy, stripUndefined, sumBy,
   parseDuration, getGid, createMessageKey,
@@ -94,6 +96,7 @@ export class MdbService extends Service {
     total: 0,
   }
   private migrationRefreshAt = 0
+  private captureTasks = new Map<string, Promise<SavedMessage | undefined>>()
 
   constructor(ctx: Context, public config: MdbService.Config) {
     super(ctx, 'messageDb')
@@ -1463,39 +1466,169 @@ export class MdbService extends Service {
 
     const { olderThan, untrackedOnly } = this.config.gc
     const minTime = Date.now() - olderThan * 24 * 60 * 60 * 1000
+    const trackedGids = this.trackedGuilds.map(getGid)
+    const batchSize = 500
+    let removedMessages = 0
+    let removedWords = 0
+    let messageCursor: Pick<SavedMessage, 'key' | 'timestamp'> | undefined
 
-    const messageResult = await this.ctx.database.remove('w-message-v2', row => $.and(
-      $.lt(row.timestamp, minTime),
-      untrackedOnly
-        ? $.not(
-          $.in(
-            $.concat(row.platform, ':', row.guildId),
-            this.trackedGuilds.map(getGid)
-          )
-        )
-        : true,
-    ))
-    // Word rows duplicate the message timestamp and guild identity, so they
-    // can be collected even if a previous run removed only the parent rows.
-    const wordResult = await this.ctx.database.remove('w-message-word-v2', row => $.and(
-      $.lt(row.timestamp, minTime),
-      untrackedOnly
-        ? $.not(
-          $.in(
-            $.concat(row.platform, ':', row.guildId),
-            this.trackedGuilds.map(getGid)
-          )
-        )
-        : true,
-    ))
+    while (true) {
+      const messages = await this.ctx.database
+        .select('w-message-v2')
+        .where(row => $.and(
+          $.lt(row.timestamp, minTime),
+          messageCursor
+            ? $.or(
+              $.gt(row.timestamp, messageCursor.timestamp),
+              $.and(
+                $.eq(row.timestamp, messageCursor.timestamp),
+                $.gt(row.key, messageCursor.key),
+              ),
+            )
+            : true,
+          untrackedOnly
+            ? $.not($.in($.concat(row.platform, ':', row.guildId), trackedGids))
+            : true,
+        ))
+        .orderBy('timestamp')
+        .orderBy('key')
+        .limit(batchSize)
+        .project(['key', 'timestamp'])
+        .execute()
+      if (! messages.length) break
+      messageCursor = messages.at(-1)
+
+      const keys = messages.map(message => message.key)
+      const references = await this.ctx.database.get('w-message-reference', {
+        messageKey: { $in: keys },
+      })
+      const retainedKeys = new Set(references.map(reference => reference.messageKey))
+      const removableKeys = keys.filter(key => ! retainedKeys.has(key))
+      if (! removableKeys.length) continue
+
+      removedMessages += (await this.ctx.database.remove('w-message-v2', {
+        key: { $in: removableKeys },
+      })).removed
+      removedWords += (await this.ctx.database.remove('w-message-word-v2', {
+        messageKey: { $in: removableKeys },
+      })).removed
+    }
+
+    // Clean up old orphan words left by interrupted or legacy GC runs.
+    let wordCursor: Pick<SavedMessageWord, 'messageKey' | 'timestamp' | 'index'> | undefined
+    while (true) {
+      const words = await this.ctx.database
+        .select('w-message-word-v2')
+        .where(row => $.and(
+          $.lt(row.timestamp, minTime),
+          wordCursor
+            ? $.or(
+              $.gt(row.timestamp, wordCursor.timestamp),
+              $.and(
+                $.eq(row.timestamp, wordCursor.timestamp),
+                $.gt(row.messageKey, wordCursor.messageKey),
+              ),
+              $.and(
+                $.eq(row.timestamp, wordCursor.timestamp),
+                $.eq(row.messageKey, wordCursor.messageKey),
+                $.gt(row.index, wordCursor.index),
+              ),
+            )
+            : true,
+          untrackedOnly
+            ? $.not($.in($.concat(row.platform, ':', row.guildId), trackedGids))
+            : true,
+        ))
+        .orderBy('timestamp')
+        .orderBy('messageKey')
+        .orderBy('index')
+        .limit(batchSize)
+        .project(['messageKey', 'timestamp', 'index'])
+        .execute()
+      if (! words.length) break
+      wordCursor = words.at(-1)
+
+      const keys = [...new Set(words.map(word => word.messageKey))]
+      const messages = await this.getMessagesByKeys(keys)
+      const existingKeys = new Set(messages.map(message => message.key))
+      const orphanKeys = keys.filter(key => ! existingKeys.has(key))
+      if (! orphanKeys.length) continue
+      removedWords += (await this.ctx.database.remove('w-message-word-v2', {
+        messageKey: { $in: orphanKeys },
+      })).removed
+    }
 
     this.logger.info(
       'collected %d messages and %d word records',
-      messageResult.removed,
-      wordResult.removed,
+      removedMessages,
+      removedWords,
     )
 
-    return messageResult.removed
+    return removedMessages
+  }
+
+  /**
+   * Read messages in key order. Missing keys and duplicate input keys are
+   * omitted from the result.
+   */
+  async getMessagesByKeys(keys: readonly string[]): Promise<SavedMessage[]> {
+    const uniqueKeys = [...new Set(keys)]
+    const messages = await this.getRowsByKeys('w-message-v2', 'key', uniqueKeys)
+    const messageMap = new Map(messages.map(message => [message.key, message]))
+    return uniqueKeys.flatMap(key => {
+      const message = messageMap.get(key)
+      return message ? [message] : []
+    })
+  }
+
+  /**
+   * Read segmented words grouped in message-key order and then word order.
+   * Missing keys and duplicate input keys are omitted from the result.
+   */
+  async getWordsByMessageKeys(keys: readonly string[]): Promise<SavedMessageWord[]> {
+    const uniqueKeys = [...new Set(keys)]
+    const words = await this.getRowsByKeys('w-message-word-v2', 'messageKey', uniqueKeys)
+    const keyOrder = new Map(uniqueKeys.map((key, index) => [key, index]))
+    return words.sort((a, b) =>
+      keyOrder.get(a.messageKey) - keyOrder.get(b.messageKey) || a.index - b.index)
+  }
+
+  /** Protect messages referenced by another plugin from garbage collection. */
+  async retainMessages(owner: string, keys: readonly string[]): Promise<void> {
+    if (! owner) throw new TypeError('Message reference owner must not be empty.')
+    const messages = await this.getMessagesByKeys(keys)
+    if (! messages.length) return
+    await this.ctx.database.upsert('w-message-reference', messages.map(message => ({
+      owner,
+      messageKey: message.key,
+    })))
+  }
+
+  /** Release messages previously retained by an owner. */
+  async releaseMessages(owner: string, keys?: readonly string[]): Promise<number> {
+    if (! owner) throw new TypeError('Message reference owner must not be empty.')
+    const query: Query<Tables['w-message-reference']> = { owner }
+    if (keys) {
+      const uniqueKeys = [...new Set(keys)]
+      if (! uniqueKeys.length) return 0
+      query.messageKey = { $in: uniqueKeys }
+    }
+    return (await this.ctx.database.remove('w-message-reference', query)).removed
+  }
+
+  private async getRowsByKeys<
+    T extends 'w-message-v2' | 'w-message-word-v2',
+    K extends 'key' | 'messageKey',
+  >(table: T, field: K, keys: readonly string[]): Promise<Tables[T][]> {
+    const result: Tables[T][] = []
+    for (let index = 0; index < keys.length; index += 500) {
+      const batch = keys.slice(index, index + 500)
+      if (! batch.length) continue
+      result.push(...await this.ctx.database.get(table, {
+        [field]: { $in: batch },
+      } as Query<Tables[T]>))
+    }
+    return result
   }
 
   /**
@@ -1544,12 +1677,38 @@ export class MdbService extends Service {
   }
 
   /**
-   * Save a message to the database.
-   * @param session The session containing the message
+   * Capture a message and return its canonical stored representation.
+   * Concurrent captures of the same message share one persistence task.
    */
-  async saveMessage(session: Session) {
+  async captureMessage(session: Session): Promise<SavedMessage | undefined> {
+    if (! session.guildId || ! session.messageId) return
+    const key = createMessageKey({
+      platform: session.platform,
+      guildId: session.guildId,
+      id: session.messageId,
+    })
+    const running = this.captureTasks.get(key)
+    if (running) return running
+
+    const task = this.captureMessageInner(session, key)
+    this.captureTasks.set(key, task)
+    try {
+      return await task
+    }
+    finally {
+      if (this.captureTasks.get(key) === task) this.captureTasks.delete(key)
+    }
+  }
+
+  private async captureMessageInner(
+    session: Session,
+    key: string,
+  ): Promise<SavedMessage | undefined> {
     // Check readonly mode.
     if (this.config.readonly) return
+
+    const [existing] = await this.ctx.database.get('w-message-v2', { key })
+    if (existing) return existing
 
     // Ignore non-guild messages.
     const { platform, selfId, guildId, userId, username, timestamp, messageId, quote } = session
@@ -1594,7 +1753,7 @@ export class MdbService extends Service {
     }
     // Insert the message into the database.
     const message: SavedMessage = {
-      key: createMessageKey({ platform, guildId, id: messageId }),
+      key,
       id: messageId,
       platform,
       guildId,
@@ -1613,7 +1772,12 @@ export class MdbService extends Service {
     // TODO: Multi-instance broadcast.
     if (inserted) this.ctx.emit('message-db/message', message)
 
-    return
+    return message
+  }
+
+  /** @deprecated Use {@link captureMessage} when the saved message is needed. */
+  async saveMessage(session: Session): Promise<void> {
+    await this.captureMessage(session)
   }
 
   /**
